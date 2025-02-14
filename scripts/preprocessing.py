@@ -54,7 +54,7 @@ snp_df_out.to_csv(f'{data_dir}/snps_out.csv', index=False)
 
 
 ######### TESTING #########
-from app.carriers import extract_carriers, combine_carrier_files
+from services.carriers_api.app.carriers import extract_carriers, combine_carrier_files
 
 output_dir = f'{data_dir}/api_test/outputs'
 
