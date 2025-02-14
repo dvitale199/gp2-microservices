@@ -180,6 +180,74 @@ def combine_carrier_files(results_by_label: dict, key_file: str, output_dir: str
         'var_info': var_info_path
     }
 
+
+def verify_genotype(raw_value, string_value, snp_name):
+    if pd.isna(raw_value):
+        return string_value == './.'
+    raw_value = int(raw_value)
+    if raw_value == 2:
+        return string_value == "WT/WT"
+    elif raw_value == 1:
+        return string_value.startswith("WT/")
+    elif raw_value == 0:
+        return string_value.count(snp_name.split('_')[1]) == 2
+    else:
+        return string_value == ":/:"
+
+def validate_carrier_data(traw_dir, combined_file, snp_info_file, samples_to_check=None):
+    """
+    Validate that combined carrier data matches original traw files.
+    
+    Args:
+        traw_dir: Directory containing traw files
+        combined_file: Path to combined carriers file
+        snp_info_file: Path to SNP info file
+        samples_to_check: List of sample IDs to check (None for all)
+    """
+    carriers = pd.read_csv(combined_file)
+    snp_df = pd.read_csv(snp_info_file)
+    
+    if samples_to_check is None:
+        samples_to_check = carriers['IID'].unique()[:5]  # Check first 5 samples by default
+    
+    mismatches = []
+    for sample_id in samples_to_check:
+        # Get ancestry for this sample
+        ancestry = carriers.loc[carriers['IID'] == sample_id, 'ancestry'].iloc[0]
+        
+        # Read corresponding traw file
+        traw_path = f'{traw_dir}/{ancestry}/{ancestry}_release9_vwb_snps.traw'
+        traw = pd.read_csv(traw_path, sep='\t')
+        traw_merged = snp_df.merge(traw, how='left', left_on='id', right_on='SNP')
+        
+        # Check each SNP
+        for snp in snp_df['snp_name_full']:
+            raw_value = traw_merged.loc[
+                traw_merged['snp_name_full'] == snp, 
+                f'0_{sample_id}'
+            ].iloc[0]
+            
+            combined_value = carriers.loc[
+                carriers['IID'] == sample_id,
+                snp
+            ].iloc[0]
+            
+            if not verify_genotype(raw_value, combined_value, snp):
+                mismatches.append({
+                    'sample': sample_id,
+                    'ancestry': ancestry,
+                    'snp': snp,
+                    'raw': raw_value,
+                    'combined': combined_value
+                })
+    
+    if mismatches:
+        print("Found mismatches:")
+        print(pd.DataFrame(mismatches))
+    else:
+        print("All checked genotypes match!")
+
+
 # Example usage:
 # if __name__ == "__main__":
 #     # Example configuration
