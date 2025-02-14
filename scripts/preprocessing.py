@@ -54,22 +54,22 @@ snp_df_out.to_csv(f'{data_dir}/snps_out.csv', index=False)
 
 
 ######### TESTING #########
-from services.carriers_api.app.carriers import extract_carriers, combine_carrier_files
+# from services.carriers_api.app.carriers import extract_carriers, combine_carrier_files
 
-output_dir = f'{data_dir}/api_test/outputs'
+# output_dir = f'{data_dir}/api_test/outputs'
 
-results_by_label = {}
-for label in labels:
-    results = extract_carriers(
-        geno_path=f'{geno_dir}/{label}/{label}_release9_vwb',
-        snplist_path=f'{data_dir}/snps_out.csv',
-        out_path=f'{output_dir}/{label}',
-        return_dfs=True
-    )
-    results_by_label[label] = results
+# results_by_label = {}
+# for label in labels:
+#     results = extract_carriers(
+#         geno_path=f'{geno_dir}/{label}/{label}_release9_vwb',
+#         snplist_path=f'{data_dir}/snps_out.csv',
+#         out_path=f'{output_dir}/{label}',
+#         return_dfs=True
+#     )
+#     results_by_label[label] = results
 
-combined_results = combine_carrier_files(
-    results_by_label=results_by_label,
-    key_file=f'{data_dir}/nba_app_key.csv',
-    output_dir=output_dir
-)
+# combined_results = combine_carrier_files(
+#     results_by_label=results_by_label,
+#     key_file=f'{data_dir}/nba_app_key.csv',
+#     output_dir=output_dir
+# )
