@@ -100,17 +100,18 @@ def extract_carriers(geno_path: str, snplist_path: str, out_path: str, return_df
     return result
 
 
-def combine_carrier_files(results_by_label: dict, key_file: str, output_dir: str) -> dict:
+def combine_carrier_files(results_by_label: dict, key_file: str, out_path: str, temp_dir: str) -> dict:
     """
     Combine carrier files from multiple ancestry labels into consolidated output files.
     
     Args:
         results_by_label: Dictionary mapping ancestry labels to their extract_carriers results
         key_file: Path to key file containing study information
-        output_dir: Directory to save combined output files
+        out_path: Full GCS path including desired prefix
+        temp_dir: Temporary directory to store files before GCS upload
     
     Returns:
-        dict: Paths to combined output files
+        dict: Paths to local temporary files
     """
     carriers_string_full = pd.DataFrame()
     carriers_int_full = pd.DataFrame()
@@ -165,11 +166,15 @@ def combine_carrier_files(results_by_label: dict, key_file: str, output_dir: str
     carriers_int_full_out_merge = carriers_int_full_out.merge(key[['IID','study']], how='left', on='IID')
     carriers_int_final = carriers_int_full_out_merge[['IID', 'study', 'ancestry'] + variant_columns]
     
-    # Save combined files
-    carriers_string_path = os.path.join(output_dir, 'carriers_string_full.csv')
-    carriers_int_path = os.path.join(output_dir, 'carriers_int_full.csv')
-    var_info_path = os.path.join(output_dir, 'var_info_full.csv')
+    # Use only the base name for local files
+    base_name = os.path.basename(out_path)
     
+    # Create local paths without gs:// prefix
+    carriers_string_path = os.path.join(temp_dir, f'{base_name}_string.csv')
+    carriers_int_path = os.path.join(temp_dir, f'{base_name}_int.csv')
+    var_info_path = os.path.join(temp_dir, f'{base_name}_info.csv')
+    
+    # Save to local temporary files
     carriers_string_final.to_csv(carriers_string_path, index=False)
     carriers_int_final.to_csv(carriers_int_path, index=False)
     var_info_base.to_csv(var_info_path, index=False)
