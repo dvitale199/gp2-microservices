@@ -7,3 +7,4 @@ python-dotenv>=0.19.0
 google-cloud-storage>=2.0.0
 fsspec>=2025.2.0
 gcsfs>=2025.2.0
+google-cloud-secretmanager>=2.23.0

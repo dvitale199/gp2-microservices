@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from google.cloud import storage
 import tempfile
@@ -6,6 +6,7 @@ import os
 from typing import List
 import shutil
 from app import carriers
+from app.security import get_api_key
 
 app = FastAPI()
 
@@ -32,7 +33,10 @@ def upload_to_gcs(bucket_name: str, local_path: str, blob_path: str):
 ANCESTRY_LABELS = ['AAC', 'AFR', 'AJ', 'AMR', 'CAH', 'CAS', 'EAS', 'EUR', 'FIN', 'MDE', 'SAS']
 
 @app.post("/process_carriers")
-async def process_carriers(request: CarrierRequest):
+async def process_carriers(
+    request: CarrierRequest,
+    api_key: str = Depends(get_api_key)
+):
     """
     Process carrier information from genotype files stored in GCS.
     Returns paths to the generated files in GCS.
