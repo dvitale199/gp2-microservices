@@ -8,12 +8,55 @@ import shutil
 from sklearn.preprocessing import MinMaxScaler
 import statsmodels.api as sm
 import dask.dataframe as dd
+import configparser
+import sys
 
 # Supress copy warning.
 pd.options.mode.chained_assignment = None
 
-from QC.utils import shell_do
+# Default configuration
+DEFAULT_CONFIG = {
+    'bcftools_plugins_path': "/data/vitaled2/bin",
+    'dask_blocksize': "100MB",
+    'num_threads': "8"
+}
 
+# Load configuration from file or environment
+def load_config(config_file=None):
+    config = DEFAULT_CONFIG.copy()
+    
+    # Try loading from environment variables first
+    for key in config:
+        env_var = f"SNP_METRICS_{key.upper()}"
+        if env_var in os.environ:
+            config[key] = os.environ[env_var]
+    
+    # Then try config file if provided
+    if config_file and os.path.exists(config_file):
+        parser = configparser.ConfigParser()
+        parser.read(config_file)
+        if 'SNP_METRICS' in parser:
+            for key in config:
+                if key in parser['SNP_METRICS']:
+                    config[key] = parser['SNP_METRICS'][key]
+    
+    return config
+
+def shell_do(command, print_cmd=False, log=False, return_log=False, err=False):
+    if print_cmd:
+        print(f'Executing: {(" ").join(command.split())}', file=sys.stderr)
+
+    res=subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    output = res.stdout.decode('utf-8') + res.stderr.decode('utf-8')
+
+    if log:
+        print(output)
+    if return_log:
+        return output
+    if err:
+        return res.stderr.decode('utf-8')
+    
 
 def get_vcf_names(vcf_path):
     with open(vcf_path, "r") as ifile:
@@ -32,12 +75,12 @@ def extract_info(info, idx, pattern):
     return None
 
 
-def process_vcf_snps_dask(vcf_path, out_path=None):
-    
+def process_vcf_snps_dask(vcf_path, out_path=None, blocksize='100MB'):
+    """Process VCF SNPs using Dask with configurable blocksize"""
     out_colnames = ['chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt','ALLELE_A','ALLELE_B', 'BAlleleFreq', 'LogRRatio', 'R', 'Theta', 'GenTrain_Score', 'GType']
 
     names = get_vcf_names(vcf_path)
-    vcf = dd.read_csv(vcf_path, comment='#', blocksize='100MB', delim_whitespace=True, header=None, names=names, dtype={'#CHROM':str}, assume_missing=True)
+    vcf = dd.read_csv(vcf_path, comment='#', blocksize=blocksize, delim_whitespace=True, header=None, names=names, dtype={'#CHROM':str}, assume_missing=True)
     IIDs = [x for x in names if x not in ['#CHROM','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT']]
 
     vcf = vcf.rename(columns={'#CHROM':'CHROM'})
@@ -94,9 +137,8 @@ def process_partition(partition):
     return pd.concat([partition, alt_split], axis=1)
 
 
-def clean_snp_metrics_dask(snp_metrics, out_path):
-    '''splits snp metrics files by chromosome and individual'''
-    
+def clean_snp_metrics_dask(snp_metrics, out_path, partition_size='100MB'):
+    """Clean SNP metrics with configurable partition size"""
     snp_metrics = snp_metrics.astype(dtype={
         'chromosome':str,
         'position':int,
@@ -113,11 +155,8 @@ def clean_snp_metrics_dask(snp_metrics, out_path):
         'GenTrain_Score':float,
         'GType':str
     })
-    snp_metrics = snp_metrics.persist()
+    snp_metrics = snp_metrics.repartition(partition_size=partition_size).persist()
     
-    # With this updated line to include the new columns in the metadata:
-    new_columns = snp_metrics.columns.tolist() + ['Alt1', 'Alt2', 'Alt3']
-    meta = snp_metrics._meta.assign(Alt1=pd.Series(dtype=str), Alt2=pd.Series(dtype=str), Alt3=pd.Series(dtype=str))[new_columns]
     # With this updated line to include the new columns in the metadata:
     new_columns = snp_metrics.columns.tolist() + ['Alt1', 'Alt2', 'Alt3']
     meta = snp_metrics._meta.assign(Alt1=pd.Series(dtype=str), Alt2=pd.Series(dtype=str), Alt3=pd.Series(dtype=str))[new_columns]
@@ -135,94 +174,81 @@ def clean_snp_metrics_dask(snp_metrics, out_path):
     dd.to_parquet(snp_metrics, out_path, compression='brotli', partition_on=['Sample_ID', 'chromosome'], write_index=False)
     
 
+def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
+    """Convert IDAT files to GTC format"""
+    cmd = f'{iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 8'
+    return shell_do(cmd)
 
-def idat_snp_metrics(idat_path, bpm, bpm_csv, egt, ref_fasta, out_path, iaap, clean_up=True, bcftools_plugins_path="/data/vitaled2/bin"):
-    '''
-    current structure of idat storage is such that a directory of each SentrixBarcode_A with all idats for that barcode in it
-    for ex.
-    1112223334
-        --> 1112223334_R01C01_Red.idat
-        --> 1112223334_R01C01_Grn.idat
-        --> 1112223334_R01C02_Red.idat
-        --> 1112223334_R01C02_Grn.idat
-        etc.
+def convert_gtc_to_vcf(bcftools_plugins_path, bpm, bpm_csv, egt, barcode_out_path, ref_fasta, barcode):
+    """Convert GTC files to VCF format"""
+    cmd = f'export BCFTOOLS_PLUGINS={bcftools_plugins_path}; \
+    bcftools +gtc2vcf \
+    --no-version -Ob \
+    --bpm {bpm} \
+    --csv {bpm_csv} \
+    --egt {egt} \
+    --gtcs {barcode_out_path} \
+    --fasta-ref {ref_fasta} | \
+    bcftools norm --no-version -Oz -c w -f {ref_fasta} > {barcode_out_path}/{barcode}.vcf.gz'
+    return subprocess.call(cmd, shell=True)
+
+def idat_snp_metrics(idat_path, bpm, bpm_csv, egt, ref_fasta, out_path, iaap, clean_up=True, config_file=None):
+    """
+    Process IDAT files to extract SNP metrics.
+    
+    Args:
+        idat_path (str): Path to IDAT files
+        bpm (str): Path to BPM file
+        bpm_csv (str): Path to BPM CSV file
+        egt (str): Path to EGT file
+        ref_fasta (str): Path to reference FASTA
+        out_path (str): Output directory
+        iaap (str): Path to IAAP executable
+        clean_up (bool): Whether to clean up intermediate files
+        config_file (str, optional): Path to configuration file
+    """
+    config = load_config(config_file)
+    bcftools_plugins_path = config['bcftools_plugins_path']
+    num_threads = config['num_threads']
+    
+    try:
+        out_tmp = f'{out_path}/tmp'
+        os.makedirs(out_tmp, exist_ok=True)
+        barcode = idat_path.split('/')[-1].split('_')[0]
+        barcode_out_path = f'{out_path}/{barcode}'
+        os.makedirs(barcode_out_path, exist_ok=True)
         
-    '''
-    out_tmp = f'{out_path}/tmp'
-    os.makedirs(out_tmp, exist_ok=True)
-    barcode = idat_path.split('/')[-1].split('_')[0]
-    barcode_out_path = f'{out_path}/{barcode}'
-    os.makedirs(barcode_out_path, exist_ok=True)
-    
-    
-    idat_to_gtc_cmd = f'\
-{iaap} gencall \
-{bpm} \
-{egt} \
-{barcode_out_path} \
--f {idat_path} \
--g \
--t 8'
-
-    # export path to plugins temporarily for biowulf. will figure this out later
-    gtc2vcf_cmd = f'\
-export BCFTOOLS_PLUGINS={bcftools_plugins_path}; \
-bcftools +gtc2vcf \
---no-version -Ob \
---bpm {bpm} \
---csv {bpm_csv} \
---egt {egt} \
---gtcs {barcode_out_path} \
---fasta-ref {ref_fasta} | \
-bcftools norm --no-version -Oz -c w -f {ref_fasta} > {barcode_out_path}/{barcode}.vcf.gz'
-# use --extra to output .tsv of other info from gtc
-
-    # sort vcf
-    sort_cmd = f'\
-bcftools \
-sort {barcode_out_path}/{barcode}.vcf.gz \
--T {out_tmp}/ \
--Oz -o {barcode_out_path}/{barcode}_sorted.vcf.gz'
-
-    # split indels and snps in vcf
-    ext_snps_cmd = f'\
-vcftools --gzvcf \
-{barcode_out_path}/{barcode}_sorted.vcf.gz \
---remove-indels \
---recode \
---recode-INFO-all \
---out {barcode_out_path}/{barcode}_sorted_snps'
-
-#     split indels and snps in vcf
-# can bring this in later if needed. for now, only snps
-#     keep_indels_cmd = f'\
-# vcftools --gzvcf \
-# {barcode_out_path}/{barcode}_sorted.vcf.gz \
-# --keep-only-indels \
-# --recode \
-# --recode-INFO-all \
-# --out {barcode_out_path}/{barcode}_sorted_indels'
-
-    cmds = [idat_to_gtc_cmd, gtc2vcf_cmd, sort_cmd, ext_snps_cmd]
-    for cmd in cmds:
-        if cmd == gtc2vcf_cmd:
-            subprocess.call(cmd, shell=True)
-        else:
-            shell_do(cmd)
+        # Step 1: Convert IDAT to GTC
+        convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path)
+        
+        # Step 2: Convert GTC to VCF
+        convert_gtc_to_vcf(bcftools_plugins_path, bpm, bpm_csv, egt, barcode_out_path, ref_fasta, barcode)
+        
+        # Step 3: Sort VCF
+        sort_cmd = f'bcftools sort {barcode_out_path}/{barcode}.vcf.gz -T {out_tmp}/ -Oz -o {barcode_out_path}/{barcode}_sorted.vcf.gz'
+        shell_do(sort_cmd)
+        
+        # Step 4: Extract SNPs
+        ext_snps_cmd = f'vcftools --gzvcf {barcode_out_path}/{barcode}_sorted.vcf.gz --remove-indels --recode --recode-INFO-all --out {barcode_out_path}/{barcode}_sorted_snps'
+        shell_do(ext_snps_cmd)
+        
+        # Step 5: Process SNP metrics
+        vcf_in = f'{barcode_out_path}/{barcode}_sorted_snps.recode.vcf'
+        snp_metrics_out = f'{barcode_out_path}/snp_metrics_{barcode}'
+        snp_metrics = process_vcf_snps_dask(vcf_in)
+        clean_snp_metrics_dask(snp_metrics, snp_metrics_out)
+        
+        if clean_up:
+            cleanup_intermediate_files(barcode_out_path)
             
-    # get snp info from each vcf
-    vcf_in = f'{barcode_out_path}/{barcode}_sorted_snps.recode.vcf'
+    except Exception as e:
+        print(f"Error in idat_snp_metrics: {e}")
+        raise
 
-    # path to directory that will store parquet partitioned on sampleid
-    snp_metrics_out = f'{barcode_out_path}/snp_metrics_{barcode}'
-    snp_metrics = process_vcf_snps_dask(vcf_in)
-    clean_snp_metrics_dask(snp_metrics, snp_metrics_out)
-
-    if clean_up:
-        # clean up large intermediates
-        extensions = ['.vcf', '.gtc', '.vcf.gz']
-
-        for file in os.listdir(barcode_out_path):
-            for extension in extensions:
-                if file.endswith(extension):
-                    os.remove(os.path.join(barcode_out_path, file))
+def cleanup_intermediate_files(directory):
+    """Clean up intermediate files from the processing pipeline"""
+    extensions = ['.vcf', '.gtc', '.vcf.gz']
+    for file in os.listdir(directory):
+        for extension in extensions:
+            if file.endswith(extension):
+                os.remove(os.path.join(directory, file))
