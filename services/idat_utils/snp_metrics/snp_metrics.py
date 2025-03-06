@@ -1,12 +1,10 @@
 import os
 import subprocess
 import numpy as np
-from numpy.core.numeric import NaN
+# from numpy.core.numeric import NaN
 import pandas as pd
-import glob
-import shutil
-from sklearn.preprocessing import MinMaxScaler
-import statsmodels.api as sm
+# from sklearn.preprocessing import MinMaxScaler
+# import statsmodels.api as sm
 import dask.dataframe as dd
 import configparser
 import sys
@@ -16,7 +14,7 @@ pd.options.mode.chained_assignment = None
 
 # Default configuration
 DEFAULT_CONFIG = {
-    'bcftools_plugins_path': "/data/vitaled2/bin",
+    'bcftools_plugins_path': "/home/vitaled2/gp2-microservices/services/idat_utils/bin",
     'dask_blocksize': "100MB",
     'num_threads': "8"
 }
@@ -77,10 +75,25 @@ def extract_info(info, idx, pattern):
 
 def process_vcf_snps_dask(vcf_path, out_path=None, blocksize='100MB'):
     """Process VCF SNPs using Dask with configurable blocksize"""
-    out_colnames = ['chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt','ALLELE_A','ALLELE_B', 'BAlleleFreq', 'LogRRatio', 'R', 'Theta', 'GenTrain_Score', 'GType']
+    out_colnames = [
+        'chromosome', 
+        'position', 
+        'snpID', 
+        'Sample_ID', 
+        'Ref', 
+        'Alt',
+        'ALLELE_A',
+        'ALLELE_B', 
+        'BAlleleFreq', 
+        'LogRRatio', 
+        'R', 
+        'Theta', 
+        'GenTrain_Score', 
+        'GType'
+        ]
 
     names = get_vcf_names(vcf_path)
-    vcf = dd.read_csv(vcf_path, comment='#', blocksize=blocksize, delim_whitespace=True, header=None, names=names, dtype={'#CHROM':str}, assume_missing=True)
+    vcf = dd.read_csv(vcf_path, comment='#', blocksize=blocksize, sep='\s+', header=None, names=names, dtype={'#CHROM':str}, assume_missing=True)
     IIDs = [x for x in names if x not in ['#CHROM','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT']]
 
     vcf = vcf.rename(columns={'#CHROM':'CHROM'})
@@ -99,7 +112,7 @@ def process_vcf_snps_dask(vcf_path, out_path=None, blocksize='100MB'):
     vcf_final = vcf_melt.loc[:,['CHROM','POS','ID','sampleid','REF','ALT','GT','ALLELE_A','ALLELE_B','BAF','LRR', 'R', 'THETA', 'GenTrain_Score']]
 
     gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
-    vcf_final['GType'] = vcf_final['GT'].map(gtype_map)
+    vcf_final['GType'] = vcf_final['GT'].map(gtype_map, meta=('GT', 'object'))
     vcf_final = vcf_final.drop(columns=['GT'])
 
     vcf_final.columns = out_colnames
@@ -139,7 +152,7 @@ def process_partition(partition):
 
 def clean_snp_metrics_dask(snp_metrics, out_path, partition_size='100MB'):
     """Clean SNP metrics with configurable partition size"""
-    snp_metrics = snp_metrics.astype(dtype={
+    snp_metrics = snp_metrics.astype({
         'chromosome':str,
         'position':int,
         'snpID':str,
@@ -176,11 +189,48 @@ def clean_snp_metrics_dask(snp_metrics, out_path, partition_size='100MB'):
 
 def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
     """Convert IDAT files to GTC format"""
-    cmd = f'{iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 8'
-    return shell_do(cmd)
+    # Check if IDAT files exist
+    if not os.path.exists(idat_path):
+        raise FileNotFoundError(f"IDAT directory not found: {idat_path}")
+    
+    # Check if red and green IDAT files exist
+    idat_files = os.listdir(idat_path)
+    red_idat = [f for f in idat_files if f.endswith('_Red.idat')]
+    green_idat = [f for f in idat_files if f.endswith('_Grn.idat')]
+    
+    if not red_idat or not green_idat:
+        raise FileNotFoundError(f"Red or Green IDAT files not found in {idat_path}. Files found: {idat_files}")
+    
+    # Set the DOTNET_SYSTEM_GLOBALIZATION_INVARIANT environment variable to handle ICU package error
+    cmd = f'export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1; {iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 2'
+    print(f"Running IDAT to GTC conversion with command: {cmd}")
+    # Use subprocess.call directly for this command to ensure environment variable is set
+    process = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = process.stdout.decode('utf-8') + process.stderr.decode('utf-8')
+    print(f"Command output: {output}")
+    
+    # Check if GTC files were created
+    gtc_files = [f for f in os.listdir(barcode_out_path) if f.endswith('.gtc')]
+    if not gtc_files:
+        print(f"IDAT to GTC conversion failed. Command output: {output}")
+        raise FileNotFoundError(f"No GTC files generated in {barcode_out_path}")
+    
+    print(f"Successfully generated {len(gtc_files)} GTC files")
+    return output
 
 def convert_gtc_to_vcf(bcftools_plugins_path, bpm, bpm_csv, egt, barcode_out_path, ref_fasta, barcode):
     """Convert GTC files to VCF format"""
+    # Check if GTC files exist
+    gtc_files = [f for f in os.listdir(barcode_out_path) if f.endswith('.gtc')]
+    if not gtc_files:
+        raise FileNotFoundError(f"No GTC files found in {barcode_out_path}")
+    
+    # Verify required files exist
+    for file_path, name in [(bpm, "BPM file"), (bpm_csv, "BPM CSV file"), 
+                           (egt, "EGT file"), (ref_fasta, "Reference FASTA")]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"{name} not found: {file_path}")
+    
     cmd = f'export BCFTOOLS_PLUGINS={bcftools_plugins_path}; \
     bcftools +gtc2vcf \
     --no-version -Ob \
@@ -190,7 +240,17 @@ def convert_gtc_to_vcf(bcftools_plugins_path, bpm, bpm_csv, egt, barcode_out_pat
     --gtcs {barcode_out_path} \
     --fasta-ref {ref_fasta} | \
     bcftools norm --no-version -Oz -c w -f {ref_fasta} > {barcode_out_path}/{barcode}.vcf.gz'
-    return subprocess.call(cmd, shell=True)
+    
+    print(f"Running GTC to VCF conversion with command: {cmd}")
+    result = subprocess.call(cmd, shell=True)
+    
+    # Check if VCF was created
+    vcf_file = f"{barcode_out_path}/{barcode}.vcf.gz"
+    if not os.path.exists(vcf_file):
+        raise FileNotFoundError(f"Failed to create VCF file: {vcf_file}. Command returned: {result}")
+    
+    print(f"Successfully generated VCF file: {vcf_file}")
+    return result
 
 def idat_snp_metrics(idat_path, bpm, bpm_csv, egt, ref_fasta, out_path, iaap, clean_up=True, config_file=None):
     """
