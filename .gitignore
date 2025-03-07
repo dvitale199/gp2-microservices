@@ -4,4 +4,4 @@ __pycache__/
 **/__pycache__/
 gp2_carriers.ipynb
 .secrets/
-services/idat_utils/data/
+services/idat_utils/data/services/idat_utils/bin/
