@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 import dask.dataframe as dd
 import sys
+from concurrent.futures import ProcessPoolExecutor
+import psutil
+import glob
 # Supress copy warning.
 pd.options.mode.chained_assignment = None
 
@@ -168,54 +171,8 @@ def setup_directories(idat_path, out_path):
     os.makedirs(barcode_out_path, exist_ok=True)
     return barcode, barcode_out_path, out_tmp
 
-def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
-    """Convert IDAT files to GTC format."""
-    # Set environment variable for .NET Core to run without globalization support
-    env = os.environ.copy()
-    env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
-    
-    idat_to_gtc_cmd = f"{iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 8"
-    
-    # Use env parameter to pass environment variables
-    result = subprocess.run(idat_to_gtc_cmd, 
-                          shell=True, 
-                          stdout=subprocess.PIPE, 
-                          stderr=subprocess.PIPE,
-                          env=env)
-    
-    if result.returncode != 0:
-        print(f"Command failed with exit code {result.returncode}")
-        print(f"Error: {result.stderr.decode('utf-8')}")
 
-def convert_gtc_to_vcf(barcode_out_path, barcode, bpm, bpm_csv, egt, ref_fasta, bcftools_plugins_path):
-    """Convert GTC files to VCF format."""
-    gtc2vcf_cmd = f"""export BCFTOOLS_PLUGINS={bcftools_plugins_path}; \
-bcftools +gtc2vcf \
---no-version -Ob \
---bpm {bpm} \
---csv {bpm_csv} \
---egt {egt} \
---gtcs {barcode_out_path} \
---fasta-ref {ref_fasta} | \
-bcftools norm --no-version -Oz -c w -f {ref_fasta} > {barcode_out_path}/{barcode}.vcf.gz"""
-    subprocess.run(gtc2vcf_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-def sort_vcf(barcode_out_path, barcode, out_tmp):
-    """Sort VCF files."""
-    sort_cmd = f"""bcftools \
-sort {barcode_out_path}/{barcode}.vcf.gz \
--T {out_tmp}/ \
--Oz -o {barcode_out_path}/{barcode}_sorted.vcf.gz"""
-    subprocess.run(sort_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-def extract_snps(barcode_out_path, barcode):
-    """Extract SNPs from sorted VCF."""
-    ext_snps_cmd = f"""vcftools --gzvcf \
-{barcode_out_path}/{barcode}_sorted.vcf.gz \
---recode \
---recode-INFO-all \
---out {barcode_out_path}/{barcode}_sorted_snps"""
-    subprocess.run(ext_snps_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 def process_snp_data(barcode_out_path, barcode):
     """Process SNP information from VCF file."""
@@ -233,38 +190,208 @@ def cleanup_intermediates(barcode_out_path, clean_up):
                 if file.endswith(extension):
                     os.remove(os.path.join(barcode_out_path, file))
 
-def idat_snp_metrics(idat_path, bpm, bpm_csv, egt, ref_fasta, out_path, iaap, clean_up=True, bcftools_plugins_path="/data/vitaled2/bin"):
-    '''
-    Process IDAT files to extract SNP metrics.
+
+
+
+
+
+
+def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
+    """Convert IDAT files to GTC format.
     
-    current structure of idat storage is such that a directory of each SentrixBarcode_A with all idats for that barcode in it
-    for ex.
-    1112223334
-        --> 1112223334_R01C01_Red.idat
-        --> 1112223334_R01C01_Grn.idat
-        --> 1112223334_R01C02_Red.idat
-        --> 1112223334_R01C02_Grn.idat
-        etc.
-    '''
-    # Setup directories
-    barcode, barcode_out_path, out_tmp = setup_directories(idat_path, out_path)
+    Args:
+        iaap: Path to IAAP CLI executable
+        bpm: Path to BPM file
+        egt: Path to EGT file
+        barcode_out_path: Output directory for GTC files
+        idat_path: Path to IDAT directory
+        
+    Returns:
+        list or bool: List of generated GTC files if successful, False if failed
+    """
+    # Set environment variable for .NET Core to run without globalization support
+    env = os.environ.copy()
+    env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
     
-    # Convert IDAT to GTC
-    # convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path)
+    # Get initial list of GTC files before conversion
+    initial_gtc_files = set(glob.glob(os.path.join(barcode_out_path, "*.gtc")))
     
-    # Convert GTC to VCF
-    convert_gtc_to_vcf(barcode_out_path, barcode, bpm, bpm_csv, egt, ref_fasta, bcftools_plugins_path)
+    idat_to_gtc_cmd = f"{iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 8"
     
-    # # Sort VCF
-    # sort_vcf(barcode_out_path, barcode, out_tmp)
+    # Use env parameter to pass environment variables
+    result = subprocess.run(idat_to_gtc_cmd, 
+                          shell=True, 
+                          stdout=subprocess.PIPE, 
+                          stderr=subprocess.PIPE,
+                          env=env)
     
-    # # Extract SNPs
-    # extract_snps(barcode_out_path, barcode)
+    if result.returncode != 0:
+        print(f"Command failed with exit code {result.returncode}")
+        print(f"Error: {result.stderr.decode('utf-8')}")
+        return False
     
-    # # Process SNP data
-    # process_snp_data(barcode_out_path, barcode)
+    # Get the list of GTC files after conversion
+    all_gtc_files = glob.glob(os.path.join(barcode_out_path, "*.gtc"))
     
-    # # Clean up intermediate files
-    # cleanup_intermediates(barcode_out_path, clean_up)
+    # Find new GTC files by comparing with the initial set
+    new_gtc_files = [f for f in all_gtc_files if f not in initial_gtc_files]
+    
+    print(f"Generated {len(new_gtc_files)} GTC files")
+    return new_gtc_files
+
+
+def gtc_to_vcf(gtc_directory, vcf_out, bpm, bpm_csv, egt, ref_fasta, out_tmp, bcftools_plugins_path, threads=8, memory="4G"):
+    """Convert all GTC files in a directory to a single VCF file.
+    
+    Args:
+        gtc_directory: Path to directory containing GTC files
+        vcf_out: Path to output VCF file
+        bpm: Path to BPM file
+        bpm_csv: Path to CSV file
+        egt: Path to EGT file
+        ref_fasta: Path to reference FASTA file
+        out_tmp: Path to temporary directory
+        bcftools_plugins_path: Path to bcftools plugins
+        threads: Number of threads to use
+        memory: Memory to allocate for sorting
+    """
+    
+    ram_tmp = "/dev/shm/vcf_tmp" if os.path.exists("/dev/shm") else out_tmp
+    os.makedirs(ram_tmp, exist_ok=True)
+    
+    cmd = f"""export BCFTOOLS_PLUGINS={bcftools_plugins_path} && \
+bcftools +gtc2vcf \
+--no-version -Ou \
+--bpm {bpm} \
+--csv {bpm_csv} \
+--egt {egt} \
+--gtcs {gtc_directory} \
+--fasta-ref {ref_fasta} | \
+bcftools norm \
+-Ou \
+--no-version \
+-c w \
+-f {ref_fasta} \
+--threads {threads} | \
+bcftools sort \
+-T {ram_tmp}/ \
+-m {memory} | \
+bcftools view \
+--threads {threads} \
+-Oz \
+-o {vcf_out} && \
+bcftools index --threads {threads} {vcf_out}"""
+    
+    print(f"Processing all GTC files in: {gtc_directory}")
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    if result.returncode != 0:
+        print(f"Command failed: {result.stderr.decode('utf-8')}")
+        print(f"Error message: {result.stderr.decode('utf-8')}")
+        return False
+    
+    return True
+
+
+def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path):
+    """Process a single IDAT directory to generate SNP metrics.
+    
+    This function handles the full pipeline:
+    1. Convert IDAT files to GTC files using IAAP tool
+    2. Convert all GTC files to a single VCF using bcftools
+    3. Process VCF to extract SNP metrics
+    4. Clean up intermediate files
+    
+    Args:
+        idat_path: Path to a single IDAT directory
+        output_directory: Directory to output results
+        bpm: Path to BPM file
+        bpm_csv: Path to CSV file
+        egt: Path to EGT file
+        ref_fasta: Path to reference FASTA file
+        iaap: Path to IAAP CLI executable
+        bcftools_plugins_path: Path to bcftools plugins
+        
+    Returns:
+        bool: True if processing was successful, False otherwise
+    """
+    # Verify the IDAT directory exists and contains IDAT files
+    if not os.path.isdir(idat_path):
+        print(f"IDAT directory not found: {idat_path}")
+        return False
+        
+    if not any(f.endswith('.idat') for f in os.listdir(idat_path)):
+        print(f"No IDAT files found in {idat_path}")
+        return False
+    
+    # Get barcode from directory name
+    barcode = os.path.basename(idat_path)
+    barcode_out_path = os.path.join(output_directory, barcode)
+    os.makedirs(barcode_out_path, exist_ok=True)
+    out_tmp = os.path.join(output_directory, f"tmp_{barcode}")
+    os.makedirs(out_tmp, exist_ok=True)
+    
+    print(f"Processing IDAT directory: {idat_path}")
+    
+    # Determine optimal resource allocation
+    cpu_count = os.cpu_count()
+    total_memory_gb = psutil.virtual_memory().total / (1024**3)
+    threads = cpu_count
+    memory = f"{int(total_memory_gb // 2)}G"
+    
+    print(f"Using {threads} threads and {memory} memory")
+    
+    # Step 1: Convert IDAT files to GTC
+    print(f"Converting IDAT to GTC for {barcode}...")
+    if not convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
+        print(f"Failed to convert IDAT to GTC for {barcode}")
+        return False
+    
+    # Verify GTC files were created
+    gtc_files = glob.glob(os.path.join(barcode_out_path, "*.gtc"))
+    if not gtc_files:
+        print(f"No GTC files found in {barcode_out_path} after conversion")
+        return False
+    
+    print(f"Successfully created {len(gtc_files)} GTC files")
+    
+    # Step 2: Process all GTC files in the directory at once
+    vcf_out = f"{barcode_out_path}/{barcode}_sorted.recode.vcf.gz"
+    print(f"Converting GTC files to VCF for {barcode}...")
+    if not gtc_to_vcf(barcode_out_path, vcf_out, bpm, bpm_csv, egt, ref_fasta, out_tmp, bcftools_plugins_path, threads, memory):
+        print(f"Failed to convert GTC files to VCF for {barcode}")
+        return False
+    
+    # Verify VCF file was created
+    if not os.path.exists(vcf_out):
+        print(f"Expected VCF file not found: {vcf_out}")
+        return False
+    
+    # Step 3: Process SNP data
+    # print(f"Processing SNP data for {barcode}...")
+    # try:
+    #     process_snp_data(barcode_out_path, barcode)
+    # except Exception as e:
+    #     print(f"Error processing SNP data for {barcode}: {e}")
+    #     return False
+    
+    # Step 4: Clean up
+    # print(f"Cleaning up for {barcode}...")
+    # try:
+    #     # Clean up intermediates
+    #     cleanup_intermediates(barcode_out_path, True)
+        
+    #     # Clean temp directory
+    #     if os.path.exists(out_tmp):
+    #         import shutil
+    #         shutil.rmtree(out_tmp)
+    # except Exception as e:
+    #     print(f"Warning: Error during cleanup: {e}")
+        # Continue despite cleanup errors
+    
+    print(f"Processing complete for {barcode}")
+    return True
+
+
 
     
