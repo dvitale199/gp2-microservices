@@ -4,3 +4,4 @@ numpy
 dask
 configparser
 pyarrow
+distributed
