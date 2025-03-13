@@ -11,30 +11,30 @@ from concurrent.futures import ProcessPoolExecutor
 # Suppress copy warning.
 pd.options.mode.chained_assignment = None
 
-def shell_do(command, print_cmd=False, log=False, return_log=False, err=False):
-    if print_cmd:
-        print(f'Executing: {(" ").join(command.split())}', file=sys.stderr)
+# def shell_do(command, print_cmd=False, log=False, return_log=False, err=False):
+    # if print_cmd:
+    #     print(f'Executing: {(" ").join(command.split())}', file=sys.stderr)
 
-    res=subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # res=subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    output = res.stdout.decode('utf-8') + res.stderr.decode('utf-8')
+    # output = res.stdout.decode('utf-8') + res.stderr.decode('utf-8')
 
-    if log:
-        print(output)
-    if return_log:
-        return output
-    if err:
-        return res.stderr.decode('utf-8')
+    # if log:
+    #     print(output)
+    # if return_log:
+    #     return output
+    # if err:
+    #     return res.stderr.decode('utf-8')
 
 
-def setup_directories(idat_path, out_path):
-    """Set up directories for processing IDAT files."""
-    out_tmp = f'{out_path}/tmp'
-    os.makedirs(out_tmp, exist_ok=True)
-    barcode = idat_path.split('/')[-1].split('_')[0]
-    barcode_out_path = f'{out_path}/{barcode}'
-    os.makedirs(barcode_out_path, exist_ok=True)
-    return barcode, barcode_out_path, out_tmp
+def cleanup_intermediates(barcode_out_path, clean_up):
+    """Clean up intermediate files if requested."""
+    if clean_up:
+        extensions = ['.vcf', '.gtc']
+        for file in os.listdir(barcode_out_path):
+            for extension in extensions:
+                if file.endswith(extension):
+                    os.remove(os.path.join(barcode_out_path, file))
 
 
 def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
@@ -160,231 +160,229 @@ def extract_info(info, idx, pattern):
         return split_info[idx].replace(pattern, "")
     return None
 
-def cleanup_intermediates(barcode_out_path, clean_up):
-    """Clean up intermediate files if requested."""
-    if clean_up:
-        extensions = ['.vcf', '.gtc']
-        for file in os.listdir(barcode_out_path):
-            for extension in extensions:
-                if file.endswith(extension):
-                    os.remove(os.path.join(barcode_out_path, file))
+
 
 ########################################################
 # Process VCF files using chunked reading to minimize memory usage.
 ########################################################    
-def process_vcf_snps_chunked(vcf_path, out_path=None, chunk_size=50000):
-    """Process VCF files using chunked reading to minimize memory usage."""
+# def process_vcf_snps_chunked(vcf_path, out_path=None, chunk_size=50000):
+#     """Process VCF files using chunked reading to minimize memory usage."""
     
-    print(f"Processing VCF file: {vcf_path} using chunked reading")
-    start_time = time.time()
+#     print(f"Processing VCF file: {vcf_path} using chunked reading")
+#     start_time = time.time()
     
-    # Get column names
-    names = get_vcf_names(vcf_path)
+#     # Get column names
+#     names = get_vcf_names(vcf_path)
     
-    # Identify sample columns (not metadata columns)
-    metadata_cols = ['#CHROM','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT']
-    sample_ids = [x for x in names if x not in metadata_cols]
+#     # Identify sample columns (not metadata columns)
+#     metadata_cols = ['#CHROM','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT']
+#     sample_ids = [x for x in names if x not in metadata_cols]
     
-    # Create output directory if needed
-    if out_path:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+#     # Create output directory if needed
+#     if out_path:
+#         os.makedirs(os.path.dirname(out_path), exist_ok=True)
     
-    # Open file for reading
-    opener = gzip.open if vcf_path.endswith('.gz') else open
-    mode = 'rt' if vcf_path.endswith('.gz') else 'r'
+#     # Open file for reading
+#     opener = gzip.open if vcf_path.endswith('.gz') else open
+#     mode = 'rt' if vcf_path.endswith('.gz') else 'r'
     
-    # Count total lines for progress reporting
-    total_lines = 0
-    with opener(vcf_path, mode) as f:
-        for line in f:
-            if not line.startswith('#'):
-                total_lines += 1
+#     # Count total lines for progress reporting
+#     total_lines = 0
+#     with opener(vcf_path, mode) as f:
+#         for line in f:
+#             if not line.startswith('#'):
+#                 total_lines += 1
     
-    print(f"Total data lines to process: {total_lines}")
+#     print(f"Total data lines to process: {total_lines}")
     
-    # Process file in chunks
-    chunk_count = 0
+#     # Process file in chunks
+#     chunk_count = 0
     
-    with opener(vcf_path, mode) as f:
-        # Skip header lines
-        for line in f:
-            if line.startswith('#') and not line.startswith('#CHROM'):
-                continue
-            elif line.startswith('#CHROM'):
-                # Found column headers
-                break
+#     with opener(vcf_path, mode) as f:
+#         # Skip header lines
+#         for line in f:
+#             if line.startswith('#') and not line.startswith('#CHROM'):
+#                 continue
+#             elif line.startswith('#CHROM'):
+#                 # Found column headers
+#                 break
         
-        # Process data lines in chunks
-        current_chunk = []
-        processed_lines = 0
+#         # Process data lines in chunks
+#         current_chunk = []
+#         processed_lines = 0
         
-        for line in f:
-            line_data = line.strip().split('\t')
-            current_chunk.append(line_data)
-            processed_lines += 1
+#         for line in f:
+#             line_data = line.strip().split('\t')
+#             current_chunk.append(line_data)
+#             processed_lines += 1
             
-            # Process when chunk reaches desired size or at end of file
-            if len(current_chunk) >= chunk_size:
-                # Process this chunk
-                chunk_df = pd.DataFrame(current_chunk, columns=names)
-                processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
+#             # Process when chunk reaches desired size or at end of file
+#             if len(current_chunk) >= chunk_size:
+#                 # Process this chunk
+#                 chunk_df = pd.DataFrame(current_chunk, columns=names)
+#                 processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
                 
-                # Write chunk to parquet
-                if out_path:
-                    chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-                    processed_chunk.to_parquet(chunk_file)
+#                 # Write chunk to parquet
+#                 if out_path:
+#                     chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
+#                     processed_chunk.to_parquet(chunk_file)
                 
-                # Report progress
-                progress = (processed_lines / total_lines) * 100
-                elapsed = time.time() - start_time
-                print(f"Progress: {progress:.2f}% ({processed_lines}/{total_lines} lines) - {elapsed:.2f} seconds elapsed")
+#                 # Report progress
+#                 progress = (processed_lines / total_lines) * 100
+#                 elapsed = time.time() - start_time
+#                 print(f"Progress: {progress:.2f}% ({processed_lines}/{total_lines} lines) - {elapsed:.2f} seconds elapsed")
                 
-                # Clear memory
-                del chunk_df, processed_chunk, current_chunk
-                current_chunk = []
-                chunk_count += 1
+#                 # Clear memory
+#                 del chunk_df, processed_chunk, current_chunk
+#                 current_chunk = []
+#                 chunk_count += 1
         
-        # Process the last chunk if any
-        if current_chunk:
-            chunk_df = pd.DataFrame(current_chunk, columns=names)
-            processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
+#         # Process the last chunk if any
+#         if current_chunk:
+#             chunk_df = pd.DataFrame(current_chunk, columns=names)
+#             processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
             
-            if out_path:
-                chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-                processed_chunk.to_parquet(chunk_file)
+#             if out_path:
+#                 chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
+#                 processed_chunk.to_parquet(chunk_file)
     
-    print(f"Processed {chunk_count + 1} chunks in {time.time() - start_time:.2f} seconds")
+#     print(f"Processed {chunk_count + 1} chunks in {time.time() - start_time:.2f} seconds")
     
-    # Merge all chunk files
-    if out_path:
-        merge_parquet_chunks(f"{out_path}_chunk_*.parquet", f"{out_path}_merged")
+#     # Merge all chunk files
+#     if out_path:
+#         merge_parquet_chunks(f"{out_path}_chunk_*.parquet", f"{out_path}_merged")
     
-    return True
+#     return True
 
-def process_vcf_chunk(chunk_df, sample_ids, metadata_cols):
-    """Process a single chunk of VCF data."""
+# def process_vcf_chunk(chunk_df, sample_ids, metadata_cols):
+#     """Process a single chunk of VCF data."""
     
-    # Fix metadata columns to match actual dataframe columns
-    fixed_metadata_cols = []
-    for col in metadata_cols:
-        if col == '#CHROM' and '#CHROM' not in chunk_df.columns:
-            if 'CHROM' in chunk_df.columns:
-                fixed_metadata_cols.append('CHROM')
-            else:
-                # Look for a column that might be CHROM (like chr1)
-                chrom_cols = [c for c in chunk_df.columns if c.startswith('chr')]
-                if chrom_cols:
-                    fixed_metadata_cols.append(chrom_cols[0])
-        else:
-            fixed_metadata_cols.append(col)
+#     # Fix metadata columns to match actual dataframe columns
+#     fixed_metadata_cols = []
+#     for col in metadata_cols:
+#         if col == '#CHROM' and '#CHROM' not in chunk_df.columns:
+#             if 'CHROM' in chunk_df.columns:
+#                 fixed_metadata_cols.append('CHROM')
+#             else:
+#                 # Look for a column that might be CHROM (like chr1)
+#                 chrom_cols = [c for c in chunk_df.columns if c.startswith('chr')]
+#                 if chrom_cols:
+#                     fixed_metadata_cols.append(chrom_cols[0])
+#         else:
+#             fixed_metadata_cols.append(col)
     
-    # Melt dataframe to convert from wide to long format
-    vcf_melt = pd.melt(
-        chunk_df, 
-        id_vars=fixed_metadata_cols, 
-        value_vars=sample_ids,
-        var_name='sampleid', 
-        value_name='metrics'
-    )
+#     # Melt dataframe to convert from wide to long format
+#     vcf_melt = pd.melt(
+#         chunk_df, 
+#         id_vars=fixed_metadata_cols, 
+#         value_vars=sample_ids,
+#         var_name='sampleid', 
+#         value_name='metrics'
+#     )
     
-    # Get the chromosome column name
-    chrom_col = 'CHROM'
-    if '#CHROM' in vcf_melt.columns:
-        chrom_col = '#CHROM'
-    elif any(col.startswith('chr') for col in vcf_melt.columns):
-        potential_chrom_cols = [col for col in vcf_melt.columns if col.startswith('chr')]
-        if potential_chrom_cols:
-            chrom_col = potential_chrom_cols[0]
+#     # Get the chromosome column name
+#     chrom_col = 'CHROM'
+#     if '#CHROM' in vcf_melt.columns:
+#         chrom_col = '#CHROM'
+#     elif any(col.startswith('chr') for col in vcf_melt.columns):
+#         potential_chrom_cols = [col for col in vcf_melt.columns if col.startswith('chr')]
+#         if potential_chrom_cols:
+#             chrom_col = potential_chrom_cols[0]
     
-    # If the column isn't CHROM or #CHROM, rename it
-    if chrom_col != 'CHROM' and chrom_col != '#CHROM':
-        vcf_melt = vcf_melt.rename(columns={chrom_col: 'CHROM'})
-    elif chrom_col == '#CHROM':
-        vcf_melt = vcf_melt.rename(columns={'#CHROM': 'CHROM'})
+#     # If the column isn't CHROM or #CHROM, rename it
+#     if chrom_col != 'CHROM' and chrom_col != '#CHROM':
+#         vcf_melt = vcf_melt.rename(columns={chrom_col: 'CHROM'})
+#     elif chrom_col == '#CHROM':
+#         vcf_melt = vcf_melt.rename(columns={'#CHROM': 'CHROM'})
     
-    # Split metrics column
-    metric_cols = ['GT','GQ','IGC','BAF','LRR','NORMX','NORMY','R','THETA','X','Y']
-    vcf_melt[metric_cols] = vcf_melt['metrics'].str.split(':', expand=True, n=10)
+#     # Split metrics column
+#     metric_cols = ['GT','GQ','IGC','BAF','LRR','NORMX','NORMY','R','THETA','X','Y']
+#     vcf_melt[metric_cols] = vcf_melt['metrics'].str.split(':', expand=True, n=10)
     
-    # Extract information from INFO column
-    vcf_melt['GenTrain_Score'] = vcf_melt['INFO'].apply(
-        lambda info: extract_info(info, idx=10, pattern='GenTrain_Score=')
-    )
-    vcf_melt['ALLELE_A'] = vcf_melt['INFO'].apply(
-        lambda info: extract_info(info, idx=1, pattern='ALLELE_A=')
-    )
-    vcf_melt['ALLELE_B'] = vcf_melt['INFO'].apply(
-        lambda info: extract_info(info, idx=2, pattern='ALLELE_B=')
-    )
+#     # Extract information from INFO column
+#     vcf_melt['GenTrain_Score'] = vcf_melt['INFO'].apply(
+#         lambda info: extract_info(info, idx=10, pattern='GenTrain_Score=')
+#     )
+#     vcf_melt['ALLELE_A'] = vcf_melt['INFO'].apply(
+#         lambda info: extract_info(info, idx=1, pattern='ALLELE_A=')
+#     )
+#     vcf_melt['ALLELE_B'] = vcf_melt['INFO'].apply(
+#         lambda info: extract_info(info, idx=2, pattern='ALLELE_B=')
+#     )
     
-    # Drop unused columns
-    vcf_melt = vcf_melt.drop(columns=[
-        'QUAL', 'FILTER', 'INFO', 'GQ', 'IGC', 
-        'NORMX', 'NORMY', 'X', 'Y', 'metrics', 'FORMAT'
-    ])
+#     # Drop unused columns
+#     vcf_melt = vcf_melt.drop(columns=[
+#         'QUAL', 'FILTER', 'INFO', 'GQ', 'IGC', 
+#         'NORMX', 'NORMY', 'X', 'Y', 'metrics', 'FORMAT'
+#     ])
     
-    # Clean up chromosome column
-    vcf_melt['CHROM'] = vcf_melt['CHROM'].astype(str).str.replace('chr','')
+#     # Clean up chromosome column
+#     vcf_melt['CHROM'] = vcf_melt['CHROM'].astype(str).str.replace('chr','')
     
-    # Map GT values
-    gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
-    vcf_melt['GType'] = vcf_melt['GT'].map(gtype_map)
+#     # Map GT values
+#     gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
+#     vcf_melt['GType'] = vcf_melt['GT'].map(gtype_map)
     
-    # Process GT values
-    vcf_melt['GT'] = vcf_melt['GType']
+#     # Process GT values
+#     vcf_melt['GT'] = vcf_melt['GType']
     
-    # Apply update_gt function
-    vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '1'), 'GT'] = 'BB'
-    vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '0'), 'GT'] = 'AA'
-    vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '1'), 'GT'] = 'BB'
-    vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '0'), 'GT'] = 'AA'
-    vcf_melt.loc[(vcf_melt['GType'] == 'AB'), 'GT'] = 'AB'
-    vcf_melt.loc[(vcf_melt['GType'] == 'NC'), 'GT'] = 'NC'
-    vcf_melt['GT'] = vcf_melt['GT'].fillna('NC')
+#     # Apply update_gt function
+#     vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '1'), 'GT'] = 'BB'
+#     vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '0'), 'GT'] = 'AA'
+#     vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '1'), 'GT'] = 'BB'
+#     vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '0'), 'GT'] = 'AA'
+#     vcf_melt.loc[(vcf_melt['GType'] == 'AB'), 'GT'] = 'AB'
+#     vcf_melt.loc[(vcf_melt['GType'] == 'NC'), 'GT'] = 'NC'
+#     vcf_melt['GT'] = vcf_melt['GT'].fillna('NC')
     
-    # Process alternate alleles
-    vcf_melt['a1'] = vcf_melt['REF']
-    vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'a1'] = vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'ALT']
+#     # Process alternate alleles
+#     vcf_melt['a1'] = vcf_melt['REF']
+#     vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'a1'] = vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'ALT']
     
-    vcf_melt['a2'] = vcf_melt['REF']
-    vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'a2'] = vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'ALT']
+#     vcf_melt['a2'] = vcf_melt['REF']
+#     vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'a2'] = vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'ALT']
     
-    # Rename columns to match expected output format
-    final_df = vcf_melt.rename(columns={
-        'CHROM': 'chromosome',
-        'POS': 'position',
-        'ID': 'snpID',
-        'sampleid': 'Sample_ID',
-        'REF': 'Ref',
-        'ALT': 'Alt'
-    })
+#     # Rename columns to match expected output format
+#     final_df = vcf_melt.rename(columns={
+#         'CHROM': 'chromosome',
+#         'POS': 'position',
+#         'ID': 'snpID',
+#         'sampleid': 'Sample_ID',
+#         'REF': 'Ref',
+#         'ALT': 'Alt'
+#     })
     
-    # Convert types
-    final_df = final_df.astype({
-        'chromosome': str,
-        'position': int,
-        'snpID': str,
-        'Sample_ID': str,
-        'Ref': str,
-        'Alt': str,
-        'ALLELE_A': int,
-        'ALLELE_B': int,
-        'BAF': float,
-        'LRR': float,
-        'R': float,
-        'THETA': float,
-        'GenTrain_Score': float,
-        'GType': str
-    })
+#     # Convert types
+#     final_df = final_df.astype({
+#         'chromosome': str,
+#         'position': int,
+#         'snpID': str,
+#         'Sample_ID': str,
+#         'Ref': str,
+#         'Alt': str,
+#         'ALLELE_A': int,
+#         'ALLELE_B': int,
+#         'BAF': float,
+#         'LRR': float,
+#         'R': float,
+#         'THETA': float,
+#         'GenTrain_Score': float,
+#         'GType': str
+#     })
     
-    # Select and order columns
-    out_colnames = [
-        'chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt',
-        'ALLELE_A', 'ALLELE_B', 'BAF', 'LRR', 'R', 'THETA', 
-        'GenTrain_Score', 'GType', 'GT', 'a1', 'a2'
-    ]
+#     # Select and order columns
+#     out_colnames = [
+#         'chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt',
+#         'ALLELE_A', 'ALLELE_B', 'BAF', 'LRR', 'R', 'THETA', 
+#         'GenTrain_Score', 'GType', 'GT', 'a1', 'a2'
+#     ]
     
-    return final_df[out_colnames]
+#     return final_df[out_colnames]
+
+########################################################
+# end of chunked processing
+########################################################
+
 
 def merge_parquet_chunks(chunk_pattern, output_directory):
     """Merge multiple parquet chunks into a single parquet file."""
@@ -410,6 +408,7 @@ def merge_parquet_chunks(chunk_pattern, output_directory):
             # Read chunk
             chunk_df = pd.read_parquet(chunk_file)
             
+            # Always partition by chromosome
             chunk_df.to_parquet(
                 output_directory,
                 partition_cols=['chromosome'],
@@ -428,9 +427,6 @@ def merge_parquet_chunks(chunk_pattern, output_directory):
     print(f"All chunks merged into: {output_directory}")
     return True
 
-########################################################
-# end of chunked processing
-########################################################
 
 def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path):
     """Process a single IDAT directory to generate SNP metrics."""
@@ -537,6 +533,7 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     
     print(f"Processing complete for {barcode}")
     return True
+
 
 def process_single_sample_vcf(vcf_file, out_path, chunk_size=100000, final_output_dir=None):
     """Process a single-sample VCF file."""
@@ -650,6 +647,7 @@ def process_single_sample_chunk(chunk_df, sample_id):
         if chrom_cols:
             chrom_col = chrom_cols[0]
     
+    # Extract data for this sample - no need to melt since we only have one sample
     sample_data = chunk_df[[chrom_col, 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT', sample_id]].copy()
     
     # Rename CHROM column if needed
@@ -684,15 +682,21 @@ def process_single_sample_chunk(chunk_df, sample_id):
     gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
     sample_data['GType'] = sample_data['GT'].map(gtype_map)
     
-    # Process GT values
-    sample_data['GT_new'] = sample_data['GType']
-    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '1'), 'GT_new'] = 'BB'
-    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '0'), 'GT_new'] = 'AA'
-    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '1'), 'GT_new'] = 'BB'
-    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '0'), 'GT_new'] = 'AA'
-    sample_data.loc[(sample_data['GType'] == 'AB'), 'GT_new'] = 'AB'
-    sample_data.loc[(sample_data['GType'] == 'NC'), 'GT_new'] = 'NC'
-    sample_data['GT_new'] = sample_data['GT_new'].fillna('NC')
+    # Store current GT values and then drop the original GT column
+    orig_gt = sample_data['GT'].copy()  # Save original values
+    sample_data = sample_data.drop(columns=['GT'])  # Drop original GT column
+    
+    # Process GT values (now starting fresh)
+    sample_data['GT'] = sample_data['GType']  # Start with GType values
+    
+    # Apply the transformations directly to the GT column
+    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '1'), 'GT'] = 'BB'
+    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '0'), 'GT'] = 'AA'
+    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '1'), 'GT'] = 'BB'
+    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '0'), 'GT'] = 'AA'
+    sample_data.loc[(sample_data['GType'] == 'AB'), 'GT'] = 'AB'
+    sample_data.loc[(sample_data['GType'] == 'NC'), 'GT'] = 'NC'
+    sample_data['GT'] = sample_data['GT'].fillna('NC')
     
     # Process alternate alleles
     sample_data['a1'] = sample_data['REF']
@@ -704,17 +708,13 @@ def process_single_sample_chunk(chunk_df, sample_id):
     # Add sample ID column
     sample_data['Sample_ID'] = sample_id
     
-    # Drop the original GT column before renaming GT_new to GT
-    sample_data = sample_data.drop(columns=['GT'])
-    
     # Rename columns to match expected output format
     final_df = sample_data.rename(columns={
         'CHROM': 'chromosome',
         'POS': 'position',
         'ID': 'snpID',
         'REF': 'Ref',
-        'ALT': 'Alt',
-        'GT_new': 'GT'
+        'ALT': 'Alt'
     })
     
     # Convert types
@@ -745,40 +745,58 @@ def process_single_sample_chunk(chunk_df, sample_id):
     
     return final_df[out_colnames]
 
-def extract_snp_metadata_from_vcf(vcf_file, output_path=None):
+def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all"):
     """
-    Extract SNP metadata columns that are identical across all samples from a VCF file.
-    These include chromosome, position, snpID, Ref, Alt, ALLELE_A, ALLELE_B, GenTrain_Score, a1, a2.
+    Extract rows and specific columns from a VCF file, split INFO and FORMAT fields.
     
     Args:
         vcf_file: Path to VCF file
-        output_path: Optional path to save the metadata to parquet format
+        output_path: Optional path to save the extracted data to parquet format
+        num_rows: Number of rows to extract (default: 10, use None for all rows)
+        columns: Columns to extract. Options:
+            - "all": Extract all columns (default)
+            - "metadata": Extract only metadata columns
+            - "sample": Extract only sample-specific columns
+            - List of specific column names to extract
         
     Returns:
-        DataFrame containing the SNP metadata
+        DataFrame containing the extracted data with selected columns
     """
-    print(f"Extracting SNP metadata from: {vcf_file}")
+    # Define metadata columns
+    metadata_cols_list = [
+        'CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER',
+        'ASSAY_TYPE', 'devR_AB', 'FRAC_T', 'FRAC_G', 'meanTHETA_BB', 
+        'meanR_AB', 'devTHETA_AB', 'GC', 'N_AA', 'Orig_Score', 
+        'FRAC_C', 'GenTrain_Score', 'devR_BB', 'NORM_ID', 
+        'devR_AA', 'Intensity_Threshold', 'meanR_AA', 'devTHETA_AA', 
+        'ALLELE_A', 'N_AB', 'meanR_BB', 'meanTHETA_AA', 
+        'meanTHETA_AB', 'devTHETA_BB', 'N_BB', 'ALLELE_B', 
+        'FRAC_A', 'BEADSET_ID', 'Cluster_Sep'
+    ]
+    
+    # Define sample-specific columns
+    sample_specific_list = ['Sample_ID', 'GT', 'GQ', 'IGC', 'BAF', 'LRR', 'NORMX', 'NORMY', 'R', 'THETA', 'X', 'Y']
+    
+    # Print extraction info
+    if num_rows is None:
+        print(f"Extracting ALL rows from VCF: {vcf_file}")
+    else:
+        print(f"Extracting first {num_rows} rows from VCF: {vcf_file}")
+    
     start_time = time.time()
     
     # Open file for reading
     opener = gzip.open if vcf_file.endswith('.gz') else open
     mode = 'rt' if vcf_file.endswith('.gz') else 'r'
     
-    # Get column names
-    names = get_vcf_names(vcf_file)
-    metadata_cols = ['#CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT']
+    # Get column names from VCF
+    vcf_names = get_vcf_names(vcf_file)
+    vcf_metadata_cols = ['#CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT']
+    vcf_sample_cols = [x for x in vcf_names if x not in vcf_metadata_cols]
     
-    # Count total lines for progress reporting
-    total_lines = 0
-    with opener(vcf_file, mode) as f:
-        for line in f:
-            if not line.startswith('#'):
-                total_lines += 1
-    
-    print(f"Total data lines to process: {total_lines}")
-    
-    # Read only a small chunk to get the metadata structure
-    chunk_size = min(50000, total_lines)  # Use a smaller chunk size for metadata
+    # Read rows
+    current_chunk = []
+    row_count = 0
     
     with opener(vcf_file, mode) as f:
         # Skip header lines
@@ -789,87 +807,160 @@ def extract_snp_metadata_from_vcf(vcf_file, output_path=None):
                 # Found column headers
                 break
         
-        # Read a chunk of lines
-        current_chunk = []
-        for i, line in enumerate(f):
-            if i >= chunk_size:
+        # Read data lines
+        for line in f:
+            # Break if we've reached the requested number of rows
+            if num_rows is not None and row_count >= num_rows:
                 break
+                
             line_data = line.strip().split('\t')
             current_chunk.append(line_data)
+            row_count += 1
+            
+            # For large files, print progress periodically
+            if num_rows is None and row_count % 100000 == 0:
+                print(f"Read {row_count} rows so far...")
     
-    # Process the chunk to extract metadata
-    chunk_df = pd.DataFrame(current_chunk, columns=names)
+    # Create DataFrame
+    if not current_chunk:
+        print("No data rows found in VCF file")
+        return pd.DataFrame()
+        
+    # Create initial DataFrame with all columns
+    result_df = pd.DataFrame(current_chunk, columns=vcf_names)
+    print(f"Read {len(result_df)} total rows")
     
     # Fix CHROM column name if needed
     chrom_col = '#CHROM'
-    if '#CHROM' not in chunk_df.columns and 'CHROM' in chunk_df.columns:
+    if '#CHROM' not in result_df.columns and 'CHROM' in result_df.columns:
         chrom_col = 'CHROM'
-    elif '#CHROM' not in chunk_df.columns:
-        chrom_cols = [c for c in chunk_df.columns if c.startswith('chr')]
+    elif '#CHROM' not in result_df.columns:
+        chrom_cols = [c for c in result_df.columns if c.startswith('chr')]
         if chrom_cols:
             chrom_col = chrom_cols[0]
     
-    # Process only the relevant columns
-    metadata_df = chunk_df[[chrom_col, 'POS', 'ID', 'REF', 'ALT', 'INFO']].copy()
-    
-    # Rename columns for consistency
+    # Rename chromosome column for consistency
     if chrom_col != 'CHROM':
-        metadata_df = metadata_df.rename(columns={chrom_col: 'CHROM'})
+        result_df = result_df.rename(columns={chrom_col: 'CHROM'})
     
     # Clean up chromosome column
-    metadata_df['CHROM'] = metadata_df['CHROM'].astype(str).str.replace('chr', '')
+    result_df['CHROM'] = result_df['CHROM'].astype(str).str.replace('chr', '')
     
-    # Extract fields from INFO column
-    metadata_df['GenTrain_Score'] = metadata_df['INFO'].apply(
-        lambda info: extract_info(info, idx=10, pattern='GenTrain_Score=')
-    )
-    metadata_df['ALLELE_A'] = metadata_df['INFO'].apply(
-        lambda info: extract_info(info, idx=1, pattern='ALLELE_A=')
-    )
-    metadata_df['ALLELE_B'] = metadata_df['INFO'].apply(
-        lambda info: extract_info(info, idx=2, pattern='ALLELE_B=')
-    )
+    # Convert numeric columns to appropriate types
+    if 'POS' in result_df.columns:
+        result_df['POS'] = result_df['POS'].astype(int)
     
-    # Process alternate alleles
-    metadata_df['a1'] = metadata_df['REF']
-    metadata_df.loc[metadata_df['ALLELE_A'].astype(str) == '1', 'a1'] = metadata_df.loc[metadata_df['ALLELE_A'].astype(str) == '1', 'ALT']
+    # Keep track of columns to drop
+    columns_to_drop = []
     
-    metadata_df['a2'] = metadata_df['REF']
-    metadata_df.loc[metadata_df['ALLELE_B'].astype(str) == '1', 'a2'] = metadata_df.loc[metadata_df['ALLELE_B'].astype(str) == '1', 'ALT']
+    # Extract sample ID from the filename
+    sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
     
-    # Drop INFO column as we've extracted what we need
-    metadata_df = metadata_df.drop(columns=['INFO'])
+    # Step 1: Parse INFO column into separate columns
+    if 'INFO' in result_df.columns:
+        print("Parsing INFO column into separate fields...")
+        # Get all INFO keys first
+        info_keys = set()
+        for info_str in result_df['INFO']:
+            for field in info_str.split(';'):
+                if '=' in field:
+                    key = field.split('=')[0]
+                    info_keys.add(key)
+        
+        # Create a column for each INFO key - direct column name without prefix
+        for key in info_keys:
+            result_df[key] = result_df['INFO'].apply(
+                lambda info_str: next(
+                    (item.split('=')[1] for item in info_str.split(';') 
+                     if item.startswith(f"{key}=")), 
+                    None
+                )
+            )
+        
+        # Mark INFO column for deletion
+        columns_to_drop.append('INFO')
     
-    # Rename columns to match our standard format
-    final_metadata = metadata_df.rename(columns={
-        'CHROM': 'chromosome',
-        'POS': 'position',
-        'ID': 'snpID',
-        'REF': 'Ref',
-        'ALT': 'Alt'
-    })
+    # Step 2: Parse FORMAT column and sample genotype data
+    if 'FORMAT' in result_df.columns and vcf_sample_cols:
+        print("Parsing FORMAT column and sample data...")
+        # Get all FORMAT fields from the first row (usually consistent)
+        format_fields = result_df['FORMAT'].iloc[0].split(':')
+        
+        for sample in vcf_sample_cols:
+            # Check if the sample column exists before processing
+            if sample in result_df.columns:
+                # Split the sample data by ':'
+                sample_data = result_df[sample].str.split(':', expand=True)
+                
+                # Create new columns for each format field - without sample prefix
+                for i, field in enumerate(format_fields):
+                    if i < sample_data.shape[1]:  # Only process if there's data
+                        # Use just the field name - if there are multiple samples, 
+                        # the last one will overwrite previous ones
+                        result_df[field] = sample_data[i]
+                
+                # Mark this sample column for deletion
+                columns_to_drop.append(sample)
+        
+        # Mark FORMAT column for deletion
+        columns_to_drop.append('FORMAT')
     
-    # Convert types
-    final_metadata = final_metadata.astype({
-        'chromosome': str,
-        'position': int,
-        'snpID': str,
-        'Ref': str,
-        'Alt': str,
-        'ALLELE_A': int,
-        'ALLELE_B': int,
-        'GenTrain_Score': float
-    })
+    # Drop all the columns we've processed
+    if columns_to_drop:
+        result_df = result_df.drop(columns=columns_to_drop)
     
-    print(f"Extracted metadata for {len(final_metadata)} SNPs in {time.time() - start_time:.2f} seconds")
+    # Add Sample_ID column if it doesn't exist yet
+    if 'Sample_ID' not in result_df.columns:
+        result_df['Sample_ID'] = sample_id
     
-    # Save metadata if a path is provided
+    # Add IID column (same as Sample_ID for now)
+    result_df['IID'] = result_df['Sample_ID']
+    
+    # Ensure 'ID' is in the columns for all filtering options
+    if columns == "all":
+        # Keep all columns
+        filtered_df = result_df
+    elif columns == "metadata":
+        # Filter to only metadata columns, ensure ID is included
+        available_metadata = [col for col in metadata_cols_list if col in result_df.columns]
+        if 'ID' not in available_metadata and 'ID' in result_df.columns:
+            available_metadata.append('ID')
+        filtered_df = result_df[available_metadata]
+    elif columns == "sample":
+        # Filter to only sample-specific columns, ensure ID and IID are included
+        available_sample_cols = [col for col in sample_specific_list if col in result_df.columns]
+        required_cols = ['ID', 'IID']
+        for col in required_cols:
+            if col not in available_sample_cols and col in result_df.columns:
+                available_sample_cols.append(col)
+        filtered_df = result_df[available_sample_cols]
+    elif isinstance(columns, list):
+        # Filter to user-specified columns, ensure ID is included
+        available_columns = [col for col in columns if col in result_df.columns]
+        
+        # Add ID if not already in the list
+        if 'ID' not in available_columns and 'ID' in result_df.columns:
+            available_columns.append('ID')
+        
+        # If any sample-specific column is requested, include IID
+        has_sample_column = any(col in sample_specific_list for col in available_columns)
+        if has_sample_column and 'IID' not in available_columns and 'IID' in result_df.columns:
+            available_columns.append('IID')
+            
+        filtered_df = result_df[available_columns]
+    else:
+        print(f"Warning: Unrecognized columns option '{columns}'. Returning all columns.")
+        filtered_df = result_df
+    
+    print(f"Extracted and processed {len(filtered_df)} rows with {len(filtered_df.columns)} columns in {time.time() - start_time:.2f} seconds")
+    
+    # Save result if a path is provided
     if output_path:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        final_metadata.to_parquet(output_path, index=False)
-        print(f"Saved SNP metadata to: {output_path}")
+        filtered_df.to_csv(output_path, index=False)
+        print(f"Saved VCF data to: {output_path}")
     
-    return final_metadata
+    return filtered_df
 
 
 
