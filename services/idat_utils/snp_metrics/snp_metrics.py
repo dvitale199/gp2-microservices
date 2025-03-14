@@ -745,33 +745,40 @@ def process_single_sample_chunk(chunk_df, sample_id):
     
     return final_df[out_colnames]
 
-def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all"):
+def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all", 
+                         output_format="csv", partition_by_chromosome=False):
     """
     Extract rows and specific columns from a VCF file, split INFO and FORMAT fields.
+    Uses a predefined list of columns for consistent extraction.
     
     Args:
         vcf_file: Path to VCF file
-        output_path: Optional path to save the extracted data to parquet format
+        output_path: Optional path to save the extracted data
         num_rows: Number of rows to extract (default: 10, use None for all rows)
         columns: Columns to extract. Options:
             - "all": Extract all columns (default)
             - "metadata": Extract only metadata columns
             - "sample": Extract only sample-specific columns
             - List of specific column names to extract
+        output_format: Format to save the output (default: "csv")
+            - "csv": Save as CSV file
+            - "parquet": Save as Parquet file/directory
+        partition_by_chromosome: Whether to partition Parquet output by chromosome 
+            (default: False, only applies when output_format="parquet")
         
     Returns:
         DataFrame containing the extracted data with selected columns
     """
-    # Define metadata columns
+    # Define metadata columns - use the exact list provided
     metadata_cols_list = [
-        'CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER',
-        'ASSAY_TYPE', 'devR_AB', 'FRAC_T', 'FRAC_G', 'meanTHETA_BB', 
-        'meanR_AB', 'devTHETA_AB', 'GC', 'N_AA', 'Orig_Score', 
-        'FRAC_C', 'GenTrain_Score', 'devR_BB', 'NORM_ID', 
-        'devR_AA', 'Intensity_Threshold', 'meanR_AA', 'devTHETA_AA', 
-        'ALLELE_A', 'N_AB', 'meanR_BB', 'meanTHETA_AA', 
-        'meanTHETA_AB', 'devTHETA_BB', 'N_BB', 'ALLELE_B', 
-        'FRAC_A', 'BEADSET_ID', 'Cluster_Sep'
+        'ID', 'ASSAY_TYPE', 'devR_AB', 'POS', 'FRAC_T', 'FRAC_G', 
+        'meanTHETA_BB', 'meanR_AB', 'devTHETA_AB', 'GC', 'N_AA', 
+        'QUAL', 'Orig_Score', 'FRAC_C', 'GenTrain_Score', 'devR_BB', 
+        'NORM_ID', 'devR_AA', 'FILTER', 'Intensity_Threshold', 
+        'meanR_AA', 'CHROM', 'devTHETA_AA', 'ALLELE_A', 'N_AB', 
+        'meanR_BB', 'meanTHETA_AA', 'meanTHETA_AB', 'REF', 
+        'devTHETA_BB', 'N_BB', 'ALLELE_B', 'FRAC_A', 'BEADSET_ID', 
+        'ALT', 'Cluster_Sep', 'a1', 'a2'  # Added a1 and a2
     ]
     
     # Define sample-specific columns
@@ -785,6 +792,13 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all"):
     
     start_time = time.time()
     
+    # Extract sample ID from the filename
+    sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
+    
+    # --- OPTIMIZATION 1: Use chunked reading for large files ---
+    # This is especially helpful when num_rows is None (reading all rows)
+    chunk_size = 100000  # Adjust based on memory availability
+    
     # Open file for reading
     opener = gzip.open if vcf_file.endswith('.gz') else open
     mode = 'rt' if vcf_file.endswith('.gz') else 'r'
@@ -794,158 +808,164 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all"):
     vcf_metadata_cols = ['#CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT']
     vcf_sample_cols = [x for x in vcf_names if x not in vcf_metadata_cols]
     
-    # Read rows
-    current_chunk = []
-    row_count = 0
-    
-    with opener(vcf_file, mode) as f:
-        # Skip header lines
-        for line in f:
-            if line.startswith('#') and not line.startswith('#CHROM'):
-                continue
-            elif line.startswith('#CHROM'):
-                # Found column headers
-                break
+    # Only use chunked processing if reading all rows or a large number
+    if num_rows is None or num_rows > chunk_size:
+        result_df = None
+        current_chunk = []
+        total_rows_read = 0
         
-        # Read data lines
-        for line in f:
-            # Break if we've reached the requested number of rows
-            if num_rows is not None and row_count >= num_rows:
-                break
-                
-            line_data = line.strip().split('\t')
-            current_chunk.append(line_data)
-            row_count += 1
+        with opener(vcf_file, mode) as f:
+            # Skip header lines
+            for line in f:
+                if line.startswith('#') and not line.startswith('#CHROM'):
+                    continue
+                elif line.startswith('#CHROM'):
+                    # Found column headers
+                    break
             
-            # For large files, print progress periodically
-            if num_rows is None and row_count % 100000 == 0:
-                print(f"Read {row_count} rows so far...")
-    
-    # Create DataFrame
-    if not current_chunk:
-        print("No data rows found in VCF file")
-        return pd.DataFrame()
+            # Process data in chunks
+            for line in f:
+                line_data = line.strip().split('\t')
+                current_chunk.append(line_data)
+                total_rows_read += 1
+                
+                # Process chunk when it reaches the desired size or at end of desired rows
+                if len(current_chunk) >= chunk_size or (num_rows is not None and total_rows_read >= num_rows):
+                    # Convert chunk to DataFrame
+                    chunk_df = pd.DataFrame(current_chunk, columns=vcf_names)
+                    
+                    # Process this chunk
+                    processed_chunk = _process_vcf_chunk(
+                        chunk_df, 
+                        vcf_sample_cols, 
+                        sample_id,
+                        faster=True
+                    )
+                    
+                    # Append to result or create new result
+                    if result_df is None:
+                        result_df = processed_chunk
+                    else:
+                        result_df = pd.concat([result_df, processed_chunk], ignore_index=True)
+                    
+                    # Report progress
+                    print(f"Processed {total_rows_read} rows ({len(current_chunk)} in this chunk)")
+                    
+                    # Clear memory
+                    current_chunk = []
+                    
+                    # Break if we've reached the desired number of rows
+                    if num_rows is not None and total_rows_read >= num_rows:
+                        break
+            
+            # Process any remaining rows
+            if current_chunk:
+                chunk_df = pd.DataFrame(current_chunk, columns=vcf_names)
+                processed_chunk = _process_vcf_chunk(
+                    chunk_df, 
+                    vcf_sample_cols, 
+                    sample_id,
+                    faster=True
+                )
+                
+                if result_df is None:
+                    result_df = processed_chunk
+                else:
+                    result_df = pd.concat([result_df, processed_chunk], ignore_index=True)
+                
+                print(f"Processed {total_rows_read} total rows")
+    else:
+        # For small numbers of rows, use the original approach without chunking
+        current_chunk = []
+        row_count = 0
         
-    # Create initial DataFrame with all columns
-    result_df = pd.DataFrame(current_chunk, columns=vcf_names)
+        with opener(vcf_file, mode) as f:
+            # Skip header lines
+            for line in f:
+                if line.startswith('#') and not line.startswith('#CHROM'):
+                    continue
+                elif line.startswith('#CHROM'):
+                    # Found column headers
+                    break
+            
+            # Read specified number of data lines
+            for line in f:
+                if row_count >= num_rows:
+                    break
+                    
+                line_data = line.strip().split('\t')
+                current_chunk.append(line_data)
+                row_count += 1
+        
+        # Create DataFrame from chunk
+        if not current_chunk:
+            print("No data rows found in VCF file")
+            return pd.DataFrame()
+            
+        chunk_df = pd.DataFrame(current_chunk, columns=vcf_names)
+        result_df = _process_vcf_chunk(
+            chunk_df, 
+            vcf_sample_cols, 
+            sample_id,
+            faster=True
+        )
+    
+    # If we got no results, return empty dataframe
+    if result_df is None or result_df.empty:
+        print("No data rows processed")
+        return pd.DataFrame()
+    
     print(f"Read {len(result_df)} total rows")
     
-    # Fix CHROM column name if needed
-    chrom_col = '#CHROM'
-    if '#CHROM' not in result_df.columns and 'CHROM' in result_df.columns:
-        chrom_col = 'CHROM'
-    elif '#CHROM' not in result_df.columns:
-        chrom_cols = [c for c in result_df.columns if c.startswith('chr')]
-        if chrom_cols:
-            chrom_col = chrom_cols[0]
+    # Always include a1 and a2 in the output if they exist
+    always_include = ['ID', 'IID']
+    if 'a1' in result_df.columns:
+        always_include.append('a1')
+    if 'a2' in result_df.columns:
+        always_include.append('a2')
     
-    # Rename chromosome column for consistency
-    if chrom_col != 'CHROM':
-        result_df = result_df.rename(columns={chrom_col: 'CHROM'})
-    
-    # Clean up chromosome column
-    result_df['CHROM'] = result_df['CHROM'].astype(str).str.replace('chr', '')
-    
-    # Convert numeric columns to appropriate types
-    if 'POS' in result_df.columns:
-        result_df['POS'] = result_df['POS'].astype(int)
-    
-    # Keep track of columns to drop
-    columns_to_drop = []
-    
-    # Extract sample ID from the filename
-    sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
-    
-    # Step 1: Parse INFO column into separate columns
-    if 'INFO' in result_df.columns:
-        print("Parsing INFO column into separate fields...")
-        # Get all INFO keys first
-        info_keys = set()
-        for info_str in result_df['INFO']:
-            for field in info_str.split(';'):
-                if '=' in field:
-                    key = field.split('=')[0]
-                    info_keys.add(key)
-        
-        # Create a column for each INFO key - direct column name without prefix
-        for key in info_keys:
-            result_df[key] = result_df['INFO'].apply(
-                lambda info_str: next(
-                    (item.split('=')[1] for item in info_str.split(';') 
-                     if item.startswith(f"{key}=")), 
-                    None
-                )
-            )
-        
-        # Mark INFO column for deletion
-        columns_to_drop.append('INFO')
-    
-    # Step 2: Parse FORMAT column and sample genotype data
-    if 'FORMAT' in result_df.columns and vcf_sample_cols:
-        print("Parsing FORMAT column and sample data...")
-        # Get all FORMAT fields from the first row (usually consistent)
-        format_fields = result_df['FORMAT'].iloc[0].split(':')
-        
-        for sample in vcf_sample_cols:
-            # Check if the sample column exists before processing
-            if sample in result_df.columns:
-                # Split the sample data by ':'
-                sample_data = result_df[sample].str.split(':', expand=True)
-                
-                # Create new columns for each format field - without sample prefix
-                for i, field in enumerate(format_fields):
-                    if i < sample_data.shape[1]:  # Only process if there's data
-                        # Use just the field name - if there are multiple samples, 
-                        # the last one will overwrite previous ones
-                        result_df[field] = sample_data[i]
-                
-                # Mark this sample column for deletion
-                columns_to_drop.append(sample)
-        
-        # Mark FORMAT column for deletion
-        columns_to_drop.append('FORMAT')
-    
-    # Drop all the columns we've processed
-    if columns_to_drop:
-        result_df = result_df.drop(columns=columns_to_drop)
-    
-    # Add Sample_ID column if it doesn't exist yet
-    if 'Sample_ID' not in result_df.columns:
-        result_df['Sample_ID'] = sample_id
-    
-    # Add IID column (same as Sample_ID for now)
-    result_df['IID'] = result_df['Sample_ID']
-    
-    # Ensure 'ID' is in the columns for all filtering options
+    # Filter columns based on user selection
     if columns == "all":
         # Keep all columns
         filtered_df = result_df
     elif columns == "metadata":
-        # Filter to only metadata columns, ensure ID is included
+        # Filter to only metadata columns
         available_metadata = [col for col in metadata_cols_list if col in result_df.columns]
-        if 'ID' not in available_metadata and 'ID' in result_df.columns:
-            available_metadata.append('ID')
+        
+        # Always include specified columns if they exist
+        for col in always_include:
+            if col not in available_metadata and col in result_df.columns:
+                available_metadata.append(col)
+                
         filtered_df = result_df[available_metadata]
     elif columns == "sample":
-        # Filter to only sample-specific columns, ensure ID and IID are included
+        # Filter to only sample-specific columns
         available_sample_cols = [col for col in sample_specific_list if col in result_df.columns]
-        required_cols = ['ID', 'IID']
-        for col in required_cols:
+        
+        # Always include specified columns if they exist
+        for col in always_include:
             if col not in available_sample_cols and col in result_df.columns:
                 available_sample_cols.append(col)
+                
         filtered_df = result_df[available_sample_cols]
     elif isinstance(columns, list):
-        # Filter to user-specified columns, ensure ID is included
+        # Filter to user-specified columns
         available_columns = [col for col in columns if col in result_df.columns]
         
-        # Add ID if not already in the list
+        # Always include ID if it exists
         if 'ID' not in available_columns and 'ID' in result_df.columns:
             available_columns.append('ID')
         
-        # If any sample-specific column is requested, include IID
+        # Check if we need to include the IID column
         has_sample_column = any(col in sample_specific_list for col in available_columns)
         if has_sample_column and 'IID' not in available_columns and 'IID' in result_df.columns:
             available_columns.append('IID')
+        
+        # Always include a1 and a2 if they exist and not already specified
+        if 'a1' not in available_columns and 'a1' in result_df.columns:
+            available_columns.append('a1')
+        if 'a2' not in available_columns and 'a2' in result_df.columns:
+            available_columns.append('a2')
             
         filtered_df = result_df[available_columns]
     else:
@@ -957,14 +977,157 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all"):
     # Save result if a path is provided
     if output_path:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        filtered_df.to_csv(output_path, index=False)
-        print(f"Saved VCF data to: {output_path}")
+        
+        # Handle different output formats
+        if output_format.lower() == "csv":
+            filtered_df.to_csv(output_path, index=False)
+            print(f"Saved VCF data to CSV: {output_path}")
+        elif output_format.lower() == "parquet":
+            if partition_by_chromosome:
+                if 'CHROM' not in filtered_df.columns:
+                    print("Warning: Cannot partition by chromosome because 'CHROM' column is not in the filtered data.")
+                    filtered_df.to_parquet(output_path, index=False)
+                    print(f"Saved VCF data to Parquet (unpartitioned): {output_path}")
+                else:
+                    parquet_dir = output_path.replace('.parquet', '') if output_path.endswith('.parquet') else output_path
+                    os.makedirs(parquet_dir, exist_ok=True)
+                    
+                    # --- OPTIMIZATION 4: Use better compression for parquet ---
+                    filtered_df.to_parquet(
+                        parquet_dir,
+                        partition_cols=['CHROM'],
+                        compression='snappy',  # Faster than default
+                        index=False
+                    )
+                    print(f"Saved VCF data to Parquet (partitioned by chromosome): {parquet_dir}")
+            else:
+                filtered_df.to_parquet(output_path, compression='snappy', index=False)
+                print(f"Saved VCF data to Parquet: {output_path}")
+        else:
+            print(f"Warning: Unrecognized output format '{output_format}'. Data not saved.")
     
     return filtered_df
 
-
-
-
-
-
+# Helper function to process a chunk of VCF data
+def _process_vcf_chunk(chunk_df, vcf_sample_cols, sample_id, faster=True):
+    """
+    Process a single chunk of VCF data using a predefined set of metadata columns.
     
+    Args:
+        chunk_df: DataFrame containing the chunk of VCF data
+        vcf_sample_cols: List of sample columns in the VCF
+        sample_id: Sample ID string
+        faster: Whether to use faster processing methods (not used when relying on predefined columns)
+        
+    Returns:
+        Processed DataFrame
+    """
+    # Fix CHROM column name if needed
+    chrom_col = '#CHROM'
+    if '#CHROM' not in chunk_df.columns and 'CHROM' in chunk_df.columns:
+        chrom_col = 'CHROM'
+    elif '#CHROM' not in chunk_df.columns:
+        chrom_cols = [c for c in chunk_df.columns if c.startswith('chr')]
+        if chrom_cols:
+            chrom_col = chrom_cols[0]
+    
+    # Rename chromosome column for consistency
+    if chrom_col != 'CHROM':
+        chunk_df = chunk_df.rename(columns={chrom_col: 'CHROM'})
+    
+    # Clean up chromosome column
+    chunk_df['CHROM'] = chunk_df['CHROM'].astype(str).str.replace('chr', '')
+    
+    # Convert numeric columns to appropriate types
+    if 'POS' in chunk_df.columns:
+        chunk_df['POS'] = pd.to_numeric(chunk_df['POS'], errors='coerce')
+    
+    # Keep track of columns to drop
+    columns_to_drop = []
+    
+    # Extract INFO fields using the predefined list of keys we know exist in this data
+    if 'INFO' in chunk_df.columns:
+        # Predefined list of INFO keys we want to extract
+        info_keys = [
+            'ASSAY_TYPE', 'devR_AB', 'FRAC_T', 'FRAC_G', 'meanTHETA_BB', 
+            'meanR_AB', 'devTHETA_AB', 'GC', 'N_AA', 'Orig_Score', 
+            'FRAC_C', 'GenTrain_Score', 'devR_BB', 'NORM_ID', 
+            'devR_AA', 'Intensity_Threshold', 'meanR_AA', 'devTHETA_AA', 
+            'ALLELE_A', 'N_AB', 'meanR_BB', 'meanTHETA_AA', 
+            'meanTHETA_AB', 'devTHETA_BB', 'N_BB', 'ALLELE_B', 
+            'FRAC_A', 'BEADSET_ID', 'Cluster_Sep'
+        ]
+        
+        # Create a column for each INFO key
+        for key in info_keys:
+            pattern = f"{key}="
+            # Use vectorized extraction
+            chunk_df[key] = chunk_df['INFO'].str.extract(f"{pattern}([^;]+)", expand=False)
+        
+        # Mark INFO column for deletion
+        columns_to_drop.append('INFO')
+    
+    # Process FORMAT column and sample genotype data
+    if 'FORMAT' in chunk_df.columns and vcf_sample_cols:
+        # Get FORMAT fields from the first row
+        if chunk_df['FORMAT'].notna().any():
+            format_fields = chunk_df['FORMAT'].iloc[0].split(':')
+            
+            for sample in vcf_sample_cols:
+                if sample in chunk_df.columns:
+                    # Use str.split with expand=True directly
+                    format_data = chunk_df[sample].str.split(':', expand=True)
+                    
+                    # Add columns for each format field
+                    for i, field in enumerate(format_fields):
+                        if i < format_data.shape[1]:  # Only if data exists
+                            chunk_df[field] = format_data[i]
+                    
+                    columns_to_drop.append(sample)
+        
+        columns_to_drop.append('FORMAT')
+    
+    # Drop processed columns
+    if columns_to_drop:
+        chunk_df = chunk_df.drop(columns=columns_to_drop)
+    
+    # Add Sample_ID and IID columns
+    if 'Sample_ID' not in chunk_df.columns:
+        chunk_df['Sample_ID'] = sample_id
+    chunk_df['IID'] = chunk_df['Sample_ID']
+    
+    # Create a1 and a2 columns that are properly aligned to A and B alleles
+    if all(col in chunk_df.columns for col in ['REF', 'ALT', 'ALLELE_A', 'ALLELE_B']):
+        # Initialize a1 and a2 with REF values (the default)
+        chunk_df['a1'] = chunk_df['REF']
+        chunk_df['a2'] = chunk_df['REF']
+        
+        # Update a1 based on ALLELE_A
+        # If ALLELE_A = 1, then a1 should be ALT
+        mask_a1 = chunk_df['ALLELE_A'].astype(str) == '1'
+        if mask_a1.any():
+            chunk_df.loc[mask_a1, 'a1'] = chunk_df.loc[mask_a1, 'ALT']
+        
+        # Update a2 based on ALLELE_B
+        # If ALLELE_B = 1, then a2 should be ALT
+        mask_a2 = chunk_df['ALLELE_B'].astype(str) == '1'
+        if mask_a2.any():
+            chunk_df.loc[mask_a2, 'a2'] = chunk_df.loc[mask_a2, 'ALT']
+    
+    return chunk_df
+
+
+####### example for extract_vcf_columns #######
+####### the following is used to extract all metadata from a single-sample vcf #######
+# vcf_path = f"/path/to/vcf/{barcode}.vcf.gz"
+# parquet_path_out = f"/path/to/output/metadata"
+
+# full_metadata = extract_vcf_columns(
+#     vcf_path,
+#     output_path=parquet_path_out,
+#     num_rows=None,
+#     columns="metadata",
+#     output_format="parquet",
+#     partition_by_chromosome=True
+# )
+
