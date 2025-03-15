@@ -428,8 +428,20 @@ def merge_parquet_chunks(chunk_pattern, output_directory):
     return True
 
 
-def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path):
-    """Process a single IDAT directory to generate SNP metrics."""
+def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path, cleanup_intermediate_files=False):
+    """Process a single IDAT directory to generate SNP metrics.
+    
+    Args:
+        idat_path: Path to directory containing IDAT files
+        output_directory: Directory to output processed files
+        bpm: Path to BPM file
+        bpm_csv: Path to BPM CSV file
+        egt: Path to EGT file
+        ref_fasta: Path to reference FASTA file
+        iaap: Path to IAAP CLI executable
+        bcftools_plugins_path: Path to bcftools plugins directory
+        cleanup_intermediate_files: Whether to delete GTC and VCF files after processing (default: False)
+    """
     # Verify the IDAT directory exists and contains IDAT files
     if not os.path.isdir(idat_path):
         print(f"IDAT directory not found: {idat_path}")
@@ -443,10 +455,15 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     barcode = os.path.basename(idat_path)
     barcode_out_path = os.path.join(output_directory, barcode)
     os.makedirs(barcode_out_path, exist_ok=True)
+    
+    # Create temporary directory to store intermediate files
     out_tmp = os.path.join(output_directory, f"tmp_{barcode}")
     os.makedirs(out_tmp, exist_ok=True)
+
     
-    print(f"Processing IDAT directory: {idat_path}")
+    print(f"Intermediate files will be stored in: {out_tmp}")
+    if not cleanup_intermediate_files:
+        print(f"Intermediate files will be kept for future use")
     
     # Optimize resource allocation based on system specs
     cpu_count = os.cpu_count()
@@ -460,9 +477,9 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     print(f"- IAAP threads: {iaap_threads}")
     print(f"- bcftools threads: {bcftools_threads}")
     
-    # Step 1: Convert IDAT files to GTC
+    # Step 1: Convert IDAT files to GTC (write to temp directory)
     # print(f"Converting IDAT to GTC for {barcode}...")
-    # gtc_files = convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path)
+    # gtc_files = convert_idat_to_gtc(iaap, bpm, egt, out_tmp, idat_path)
     # if not gtc_files:
     #     print(f"Failed to convert IDAT to GTC for {barcode}")
     #     return False
@@ -470,9 +487,8 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     # print(f"Successfully created {len(gtc_files)} GTC files")
     
     # Step 2: Process all GTC files and create per-sample VCF files
-    vcf_directory = os.path.join(barcode_out_path, "sample_vcfs")
     # print(f"Converting GTC files to per-sample VCF files...")
-    # vcf_files = gtc_to_vcf(barcode_out_path, vcf_directory, bpm, bpm_csv, egt, ref_fasta, out_tmp, 
+    # vcf_files = gtc_to_vcf(out_tmp, out_tmp, bpm, bpm_csv, egt, ref_fasta, out_tmp, 
     #                  bcftools_plugins_path, threads=bcftools_threads, 
     #                  memory=f"{int(total_memory_gb * 0.7)}G")  # Use 70% of available memory
     
@@ -481,12 +497,11 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     #     return False
     
     # Step 3: Process each sample VCF file in parallel
-    vcf_files = sorted(glob.glob(os.path.join(vcf_directory, '*.vcf.gz')))
+    vcf_files = sorted(glob.glob(os.path.join(out_tmp, '*.vcf.gz')))
     print(f"Processing {len(vcf_files)} sample VCF files for {barcode}...")
     
-    # Set chunk size based on available memory (can be higher for single sample files)
     if total_memory_gb < 16:
-        chunk_size = 50000  # Doubled from before since we're only processing one sample at a time
+        chunk_size = 50000
     elif total_memory_gb < 32:
         chunk_size = 150000
     else:
@@ -498,7 +513,7 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
         
         for vcf_file in vcf_files:
             sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
-            # Change output path to be per-sample directory
+            # Change output path to be per-sample directory in the final output location
             sample_output_dir = os.path.join(output_directory, sample_id)
             os.makedirs(sample_output_dir, exist_ok=True)
             
@@ -532,6 +547,30 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
         return False
     
     print(f"Processing complete for {barcode}")
+    
+    # Clean up temporary chunks directory but keep GTC and VCF files if requested
+    try:
+        import shutil
+        
+        # Remove chunk files which are always temporary
+        chunk_files = glob.glob(os.path.join(out_tmp, "temp_*"))
+        for file_path in chunk_files:
+            if os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+            else:
+                os.remove(file_path)
+        print(f"Temporary chunk files removed")
+        
+        # If cleanup is requested, remove the entire temp directory
+        if cleanup_intermediate_files:
+            print(f"Cleaning up all intermediate files from {out_tmp}")
+            shutil.rmtree(out_tmp)
+            print(f"All intermediate files removed")
+        else:
+            print(f"Keeping intermediate GTC and VCF files in {out_tmp} for future use")
+    except Exception as e:
+        print(f"Warning: Error during cleanup: {str(e)}")
+    
     return True
 
 

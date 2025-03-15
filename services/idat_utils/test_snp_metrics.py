@@ -26,11 +26,17 @@ def main():
         egt=egt,
         ref_fasta=ref_fasta,
         iaap=iaap,
-        bcftools_plugins_path=bcftools_plugins_path
+        bcftools_plugins_path=bcftools_plugins_path,
+        cleanup_intermediate_files=False  # Keep intermediate files for testing
     )
     
     if success:
         print("IDAT processing completed successfully")
+        # Print locations of intermediate files for reference
+        barcode = os.path.basename(idat_path)
+        tmp_dir = os.path.join(output_directory, f"tmp_{barcode}")
+        print(f"Intermediate GTC files are stored in: {tmp_dir}")
+        print(f"Intermediate VCF files are stored in: {tmp_dir}")
     else:
         print("IDAT processing failed")
 
