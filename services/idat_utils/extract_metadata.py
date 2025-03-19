@@ -10,7 +10,7 @@ import time
 from snp_metrics.snp_metrics import extract_vcf_columns
 
 output_directory = "/home/vitaled2/gp2-microservices/services/idat_utils/data/output"
-vcf_path = f"/{output_directory}/207847320055/sample_vcfs/207847320055_R01C01.vcf.gz"
+vcf_path = f"/{output_directory}/snp_metrics/tmp_207847320055/207847320055_R01C01.vcf.gz"
 
 full_metadata = extract_vcf_columns(
     vcf_path,

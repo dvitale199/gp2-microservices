@@ -2,73 +2,173 @@ import os
 import subprocess
 import numpy as np
 import pandas as pd
-import sys
 import psutil
 import glob
 import gzip
 import time
+import shutil
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
+import argparse
 # Suppress copy warning.
 pd.options.mode.chained_assignment = None
 
-# def shell_do(command, print_cmd=False, log=False, return_log=False, err=False):
-    # if print_cmd:
-    #     print(f'Executing: {(" ").join(command.split())}', file=sys.stderr)
 
-    # res=subprocess.run(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    # output = res.stdout.decode('utf-8') + res.stderr.decode('utf-8')
-
-    # if log:
-    #     print(output)
-    # if return_log:
-    #     return output
-    # if err:
-    #     return res.stderr.decode('utf-8')
-
-
-def cleanup_intermediates(barcode_out_path, clean_up):
-    """Clean up intermediate files if requested."""
-    if clean_up:
-        extensions = ['.vcf', '.gtc']
-        for file in os.listdir(barcode_out_path):
-            for extension in extensions:
-                if file.endswith(extension):
-                    os.remove(os.path.join(barcode_out_path, file))
-
-
-def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path):
-    """Convert IDAT files to GTC format."""
-    # Set environment variable for .NET Core to run without globalization support
+def convert_idat_to_gtc(iaap, bpm, egt, barcode_out_path, idat_path, debug=False):
+    """Convert IDAT files to GTC format.
+    
+    Args:
+        iaap: Path to IAAP CLI executable
+        bpm: Path to BPM file
+        egt: Path to EGT file
+        barcode_out_path: Output directory for GTC files
+        idat_path: Directory containing IDAT files
+        debug: Whether to print detailed debugging information (default: False)
+    
+    Returns:
+        List of GTC file paths if successful, False otherwise
+    """
+    if debug:
+        print("\n=== Starting IDAT to GTC conversion debugging ===")
+        
+        # Verify input files exist with detailed output
+        print("\nChecking input files:")
+        for file_path, desc in [
+            (iaap, "IAAP CLI"),
+            (bpm, "BPM file"),
+            (egt, "EGT file"),
+            (idat_path, "IDAT directory"),
+            (barcode_out_path, "Output directory")
+        ]:
+            exists = os.path.exists(file_path)
+            print(f"- {desc}: {file_path}")
+            print(f"  Exists: {exists}")
+            if exists:
+                if os.path.isfile(file_path):
+                    print(f"  Size: {os.path.getsize(file_path)} bytes")
+                    print(f"  Permissions: {oct(os.stat(file_path).st_mode)[-3:]}")
+                elif os.path.isdir(file_path):
+                    print(f"  Is directory: True")
+                    print(f"  Permissions: {oct(os.stat(file_path).st_mode)[-3:]}")
+    else:
+        # Simple validation without verbose output
+        for file_path, desc in [
+            (iaap, "IAAP CLI"),
+            (bpm, "BPM file"),
+            (egt, "EGT file"),
+            (idat_path, "IDAT directory")
+        ]:
+            if not os.path.exists(file_path):
+                print(f"ERROR: {desc} not found: {file_path}")
+                return False
+    
+    # Check IDAT files
+    red_idat = glob.glob(os.path.join(idat_path, "*_Red.idat"))
+    grn_idat = glob.glob(os.path.join(idat_path, "*_Grn.idat"))
+    
+    if debug:
+        print("\nScanning for IDAT files:")
+        print(f"Red IDAT files found ({len(red_idat)}):")
+        for f in red_idat:
+            print(f"- {os.path.basename(f)} ({os.path.getsize(f)} bytes)")
+        
+        print(f"\nGreen IDAT files found ({len(grn_idat)}):")
+        for f in grn_idat:
+            print(f"- {os.path.basename(f)} ({os.path.getsize(f)} bytes)")
+    
+    if not red_idat or not grn_idat:
+        print("\nERROR: Missing IDAT files!")
+        return False
+    
+    if debug:
+        # Check output directory
+        print(f"\nChecking output directory: {barcode_out_path}")
+        print(f"Exists: {os.path.exists(barcode_out_path)}")
+        print(f"Is directory: {os.path.isdir(barcode_out_path)}")
+        print(f"Permissions: {oct(os.stat(barcode_out_path).st_mode)[-3:]}")
+    
+    # Get initial GTC files
+    initial_gtc_files = set(glob.glob(os.path.join(barcode_out_path, "*.gtc")))
+    if debug:
+        print(f"\nExisting GTC files: {len(initial_gtc_files)}")
+    
+    # Set environment and run command
     env = os.environ.copy()
     env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1"
     
-    # Get initial list of GTC files before conversion
-    initial_gtc_files = set(glob.glob(os.path.join(barcode_out_path, "*.gtc")))
-    
+    # Build and run command
     idat_to_gtc_cmd = f"{iaap} gencall {bpm} {egt} {barcode_out_path} -f {idat_path} -g -t 8"
+    if debug:
+        print(f"\nExecuting command:\n{idat_to_gtc_cmd}")
+    else:
+        print(f"Converting IDAT files to GTC format...")
     
-    # Use env parameter to pass environment variables
-    result = subprocess.run(idat_to_gtc_cmd, 
-                          shell=True, 
-                          stdout=subprocess.PIPE, 
-                          stderr=subprocess.PIPE,
-                          env=env)
-    
-    if result.returncode != 0:
-        print(f"Command failed with exit code {result.returncode}")
-        print(f"Error: {result.stderr.decode('utf-8')}")
+    try:
+        result = subprocess.run(
+            idat_to_gtc_cmd, 
+            shell=True, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True  # This will decode output as text
+        )
+        
+        if debug:
+            print("\nCommand output:")
+            print("=== STDOUT ===")
+            print(result.stdout)
+            print("=== STDERR ===")
+            print(result.stderr)
+            print(f"Return code: {result.returncode}")
+        
+        if result.returncode != 0:
+            error_msg = f"IDAT to GTC conversion failed with exit code {result.returncode}"
+            if debug:
+                print(f"\nERROR: {error_msg}")
+            else:
+                print(f"ERROR: {error_msg}")
+                print(f"STDERR: {result.stderr}")
+            return False
+        
+    except Exception as e:
+        error_msg = f"Exception while running IDAT to GTC conversion: {str(e)}"
+        if debug:
+            print(f"\nERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+        else:
+            print(f"ERROR: {error_msg}")
         return False
     
-    # Get the list of GTC files after conversion
+    # Check for new GTC files
     all_gtc_files = glob.glob(os.path.join(barcode_out_path, "*.gtc"))
-    
-    # Find new GTC files by comparing with the initial set
     new_gtc_files = [f for f in all_gtc_files if f not in initial_gtc_files]
     
-    print(f"Generated {len(new_gtc_files)} GTC files")
+    if debug:
+        print(f"\nGTC files after conversion: {len(all_gtc_files)}")
+        print(f"New GTC files generated: {len(new_gtc_files)}")
+    
+    if not new_gtc_files:
+        error_msg = "No new GTC files were generated"
+        if debug:
+            print(f"\nERROR: {error_msg}")
+            # List all files in output directory to help debug
+            print("\nContents of output directory:")
+            for f in os.listdir(barcode_out_path):
+                print(f"- {f}")
+        else:
+            print(f"ERROR: {error_msg}")
+        return False
+    
+    if debug:
+        print("\nSuccessfully generated GTC files:")
+        for f in new_gtc_files:
+            print(f"- {os.path.basename(f)}")
+        print("\n=== IDAT to GTC conversion complete ===")
+    else:
+        print(f"Successfully created {len(new_gtc_files)} GTC files")
+    
     return new_gtc_files
-
 
 def gtc_to_vcf(gtc_directory, vcf_directory, bpm, bpm_csv, egt, ref_fasta, out_tmp, bcftools_plugins_path, threads=8, memory="4G"):
     """Convert all GTC files in a directory to multiple VCF files (one per sample)."""
@@ -82,7 +182,7 @@ def gtc_to_vcf(gtc_directory, vcf_directory, bpm, bpm_csv, egt, ref_fasta, out_t
     
     cmd = f"""export BCFTOOLS_PLUGINS={bcftools_plugins_path} && \
 bcftools +gtc2vcf \
---no-version -Ou \
+--no-version -Ov \
 --bpm {bpm} \
 --csv {bpm_csv} \
 --egt {egt} \
@@ -99,7 +199,7 @@ bcftools sort \
 -m {memory} | \
 bcftools view \
 --threads {threads} \
--Oz \
+-Oz -l 1 \
 -o {temp_vcf}"""
     
     print(f"Processing all GTC files in: {gtc_directory}")
@@ -160,275 +260,44 @@ def extract_info(info, idx, pattern):
         return split_info[idx].replace(pattern, "")
     return None
 
-
-
-########################################################
-# Process VCF files using chunked reading to minimize memory usage.
-########################################################    
-# def process_vcf_snps_chunked(vcf_path, out_path=None, chunk_size=50000):
-#     """Process VCF files using chunked reading to minimize memory usage."""
-    
-#     print(f"Processing VCF file: {vcf_path} using chunked reading")
-#     start_time = time.time()
-    
-#     # Get column names
-#     names = get_vcf_names(vcf_path)
-    
-#     # Identify sample columns (not metadata columns)
-#     metadata_cols = ['#CHROM','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT']
-#     sample_ids = [x for x in names if x not in metadata_cols]
-    
-#     # Create output directory if needed
-#     if out_path:
-#         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    
-#     # Open file for reading
-#     opener = gzip.open if vcf_path.endswith('.gz') else open
-#     mode = 'rt' if vcf_path.endswith('.gz') else 'r'
-    
-#     # Count total lines for progress reporting
-#     total_lines = 0
-#     with opener(vcf_path, mode) as f:
-#         for line in f:
-#             if not line.startswith('#'):
-#                 total_lines += 1
-    
-#     print(f"Total data lines to process: {total_lines}")
-    
-#     # Process file in chunks
-#     chunk_count = 0
-    
-#     with opener(vcf_path, mode) as f:
-#         # Skip header lines
-#         for line in f:
-#             if line.startswith('#') and not line.startswith('#CHROM'):
-#                 continue
-#             elif line.startswith('#CHROM'):
-#                 # Found column headers
-#                 break
-        
-#         # Process data lines in chunks
-#         current_chunk = []
-#         processed_lines = 0
-        
-#         for line in f:
-#             line_data = line.strip().split('\t')
-#             current_chunk.append(line_data)
-#             processed_lines += 1
-            
-#             # Process when chunk reaches desired size or at end of file
-#             if len(current_chunk) >= chunk_size:
-#                 # Process this chunk
-#                 chunk_df = pd.DataFrame(current_chunk, columns=names)
-#                 processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
-                
-#                 # Write chunk to parquet
-#                 if out_path:
-#                     chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-#                     processed_chunk.to_parquet(chunk_file)
-                
-#                 # Report progress
-#                 progress = (processed_lines / total_lines) * 100
-#                 elapsed = time.time() - start_time
-#                 print(f"Progress: {progress:.2f}% ({processed_lines}/{total_lines} lines) - {elapsed:.2f} seconds elapsed")
-                
-#                 # Clear memory
-#                 del chunk_df, processed_chunk, current_chunk
-#                 current_chunk = []
-#                 chunk_count += 1
-        
-#         # Process the last chunk if any
-#         if current_chunk:
-#             chunk_df = pd.DataFrame(current_chunk, columns=names)
-#             processed_chunk = process_vcf_chunk(chunk_df, sample_ids, metadata_cols)
-            
-#             if out_path:
-#                 chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-#                 processed_chunk.to_parquet(chunk_file)
-    
-#     print(f"Processed {chunk_count + 1} chunks in {time.time() - start_time:.2f} seconds")
-    
-#     # Merge all chunk files
-#     if out_path:
-#         merge_parquet_chunks(f"{out_path}_chunk_*.parquet", f"{out_path}_merged")
-    
-#     return True
-
-# def process_vcf_chunk(chunk_df, sample_ids, metadata_cols):
-#     """Process a single chunk of VCF data."""
-    
-#     # Fix metadata columns to match actual dataframe columns
-#     fixed_metadata_cols = []
-#     for col in metadata_cols:
-#         if col == '#CHROM' and '#CHROM' not in chunk_df.columns:
-#             if 'CHROM' in chunk_df.columns:
-#                 fixed_metadata_cols.append('CHROM')
-#             else:
-#                 # Look for a column that might be CHROM (like chr1)
-#                 chrom_cols = [c for c in chunk_df.columns if c.startswith('chr')]
-#                 if chrom_cols:
-#                     fixed_metadata_cols.append(chrom_cols[0])
-#         else:
-#             fixed_metadata_cols.append(col)
-    
-#     # Melt dataframe to convert from wide to long format
-#     vcf_melt = pd.melt(
-#         chunk_df, 
-#         id_vars=fixed_metadata_cols, 
-#         value_vars=sample_ids,
-#         var_name='sampleid', 
-#         value_name='metrics'
-#     )
-    
-#     # Get the chromosome column name
-#     chrom_col = 'CHROM'
-#     if '#CHROM' in vcf_melt.columns:
-#         chrom_col = '#CHROM'
-#     elif any(col.startswith('chr') for col in vcf_melt.columns):
-#         potential_chrom_cols = [col for col in vcf_melt.columns if col.startswith('chr')]
-#         if potential_chrom_cols:
-#             chrom_col = potential_chrom_cols[0]
-    
-#     # If the column isn't CHROM or #CHROM, rename it
-#     if chrom_col != 'CHROM' and chrom_col != '#CHROM':
-#         vcf_melt = vcf_melt.rename(columns={chrom_col: 'CHROM'})
-#     elif chrom_col == '#CHROM':
-#         vcf_melt = vcf_melt.rename(columns={'#CHROM': 'CHROM'})
-    
-#     # Split metrics column
-#     metric_cols = ['GT','GQ','IGC','BAF','LRR','NORMX','NORMY','R','THETA','X','Y']
-#     vcf_melt[metric_cols] = vcf_melt['metrics'].str.split(':', expand=True, n=10)
-    
-#     # Extract information from INFO column
-#     vcf_melt['GenTrain_Score'] = vcf_melt['INFO'].apply(
-#         lambda info: extract_info(info, idx=10, pattern='GenTrain_Score=')
-#     )
-#     vcf_melt['ALLELE_A'] = vcf_melt['INFO'].apply(
-#         lambda info: extract_info(info, idx=1, pattern='ALLELE_A=')
-#     )
-#     vcf_melt['ALLELE_B'] = vcf_melt['INFO'].apply(
-#         lambda info: extract_info(info, idx=2, pattern='ALLELE_B=')
-#     )
-    
-#     # Drop unused columns
-#     vcf_melt = vcf_melt.drop(columns=[
-#         'QUAL', 'FILTER', 'INFO', 'GQ', 'IGC', 
-#         'NORMX', 'NORMY', 'X', 'Y', 'metrics', 'FORMAT'
-#     ])
-    
-#     # Clean up chromosome column
-#     vcf_melt['CHROM'] = vcf_melt['CHROM'].astype(str).str.replace('chr','')
-    
-#     # Map GT values
-#     gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
-#     vcf_melt['GType'] = vcf_melt['GT'].map(gtype_map)
-    
-#     # Process GT values
-#     vcf_melt['GT'] = vcf_melt['GType']
-    
-#     # Apply update_gt function
-#     vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '1'), 'GT'] = 'BB'
-#     vcf_melt.loc[(vcf_melt['GType'] == 'AA') & (vcf_melt['ALLELE_A'].astype(str) == '0'), 'GT'] = 'AA'
-#     vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '1'), 'GT'] = 'BB'
-#     vcf_melt.loc[(vcf_melt['GType'] == 'BB') & (vcf_melt['ALLELE_B'].astype(str) == '0'), 'GT'] = 'AA'
-#     vcf_melt.loc[(vcf_melt['GType'] == 'AB'), 'GT'] = 'AB'
-#     vcf_melt.loc[(vcf_melt['GType'] == 'NC'), 'GT'] = 'NC'
-#     vcf_melt['GT'] = vcf_melt['GT'].fillna('NC')
-    
-#     # Process alternate alleles
-#     vcf_melt['a1'] = vcf_melt['REF']
-#     vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'a1'] = vcf_melt.loc[vcf_melt['ALLELE_A'].astype(str) == '1', 'ALT']
-    
-#     vcf_melt['a2'] = vcf_melt['REF']
-#     vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'a2'] = vcf_melt.loc[vcf_melt['ALLELE_B'].astype(str) == '1', 'ALT']
-    
-#     # Rename columns to match expected output format
-#     final_df = vcf_melt.rename(columns={
-#         'CHROM': 'chromosome',
-#         'POS': 'position',
-#         'ID': 'snpID',
-#         'sampleid': 'Sample_ID',
-#         'REF': 'Ref',
-#         'ALT': 'Alt'
-#     })
-    
-#     # Convert types
-#     final_df = final_df.astype({
-#         'chromosome': str,
-#         'position': int,
-#         'snpID': str,
-#         'Sample_ID': str,
-#         'Ref': str,
-#         'Alt': str,
-#         'ALLELE_A': int,
-#         'ALLELE_B': int,
-#         'BAF': float,
-#         'LRR': float,
-#         'R': float,
-#         'THETA': float,
-#         'GenTrain_Score': float,
-#         'GType': str
-#     })
-    
-#     # Select and order columns
-#     out_colnames = [
-#         'chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt',
-#         'ALLELE_A', 'ALLELE_B', 'BAF', 'LRR', 'R', 'THETA', 
-#         'GenTrain_Score', 'GType', 'GT', 'a1', 'a2'
-#     ]
-    
-#     return final_df[out_colnames]
-
-########################################################
-# end of chunked processing
-########################################################
-
+def merge_chromosome(chrom_chunks):
+    """Helper function to merge parquet chunks for a specific chromosome."""
+    chrom, chunk_list = chrom_chunks
+    merged_df = pd.concat([
+        pd.read_parquet(f).query(f"chromosome == '{chrom}'")
+        for f, _ in chunk_list
+    ])
+    return chrom, merged_df
 
 def merge_parquet_chunks(chunk_pattern, output_directory):
-    """Merge multiple parquet chunks into a single parquet file."""
-    import glob
-    import pandas as pd
-    import os
-    
     chunk_files = sorted(glob.glob(chunk_pattern))
     if not chunk_files:
-        print(f"No chunk files found matching pattern: {chunk_pattern}")
         return False
     
-    print(f"Merging {len(chunk_files)} chunk files...")
+    # Group chunks by chromosome for parallel processing
+    chunks_by_chrom = {}
+    for chunk_file in chunk_files:
+        df = pd.read_parquet(chunk_file)
+        for chrom in df['chromosome'].unique():
+            if chrom not in chunks_by_chrom:
+                chunks_by_chrom[chrom] = []
+            chunks_by_chrom[chrom].append((chunk_file, chrom))
     
-    # Create a directory for the merged dataset
-    os.makedirs(output_directory, exist_ok=True)
-    
-    # Process each chunk file individually
-    for i, chunk_file in enumerate(chunk_files):
-        print(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
+    # Merge chromosomes in parallel
+    with ProcessPoolExecutor() as executor:
+        futures = []
+        for chrom, chunks in chunks_by_chrom.items():
+            future = executor.submit(merge_chromosome, (chrom, chunks))
+            futures.append(future)
         
-        try:
-            # Read chunk
-            chunk_df = pd.read_parquet(chunk_file)
-            
-            # Always partition by chromosome
-            chunk_df.to_parquet(
-                output_directory,
-                partition_cols=['chromosome'],
-                compression='brotli'
-            )
-            
-            # Clean up memory
-            del chunk_df
-            
-            # Remove processed chunk file to save space
-            os.remove(chunk_file)
-            
-        except Exception as e:
-            print(f"Error processing {chunk_file}: {e}")
-    
-    print(f"All chunks merged into: {output_directory}")
-    return True
+        # Write results as they complete - without .parquet extension
+        for future in futures:
+            chrom, merged_df = future.result()
+            # Remove .parquet extension
+            output_file = os.path.join(output_directory, f"chromosome_{chrom}")
+            merged_df.to_parquet(output_file, compression='snappy', index=False)
 
-
-def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path, cleanup_intermediate_files=False):
+def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta, iaap, bcftools_plugins_path, cleanup_intermediate_files=True, debug=False, bcftools_max_threads=None):
     """Process a single IDAT directory to generate SNP metrics.
     
     Args:
@@ -440,8 +309,13 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
         ref_fasta: Path to reference FASTA file
         iaap: Path to IAAP CLI executable
         bcftools_plugins_path: Path to bcftools plugins directory
-        cleanup_intermediate_files: Whether to delete GTC and VCF files after processing (default: False)
+        cleanup_intermediate_files: Whether to delete GTC and VCF files after processing (default: True)
+        debug: Whether to print detailed debugging information (default: False)
+        bcftools_max_threads: Maximum number of threads for bcftools (default: None, uses all available)
     """
+    # Start timing the entire pipeline
+    pipeline_start_time = time.time()
+    
     # Verify the IDAT directory exists and contains IDAT files
     if not os.path.isdir(idat_path):
         print(f"IDAT directory not found: {idat_path}")
@@ -459,99 +333,141 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     # Create temporary directory to store intermediate files
     out_tmp = os.path.join(output_directory, f"tmp_{barcode}")
     os.makedirs(out_tmp, exist_ok=True)
-
     
     print(f"Intermediate files will be stored in: {out_tmp}")
     if not cleanup_intermediate_files:
         print(f"Intermediate files will be kept for future use")
     
-    # Optimize resource allocation based on system specs
+    # Calculate resource allocation
     cpu_count = os.cpu_count()
     total_memory_gb = psutil.virtual_memory().total / (1024**3)
     
-    # Allocate resources for different processing stages
-    iaap_threads = min(8, cpu_count)
-    bcftools_threads = max(1, cpu_count - 1)
-    
-    print(f"Resource allocation:")
-    print(f"- IAAP threads: {iaap_threads}")
-    print(f"- bcftools threads: {bcftools_threads}")
+    # Calculate bcftools threads based on CPU count
+    if bcftools_max_threads is None:
+        bcftools_threads = min(cpu_count, 8)  # Default cap at 8 threads
+    else:
+        bcftools_threads = min(cpu_count, bcftools_max_threads)
     
     # Step 1: Convert IDAT files to GTC (write to temp directory)
-    # print(f"Converting IDAT to GTC for {barcode}...")
-    # gtc_files = convert_idat_to_gtc(iaap, bpm, egt, out_tmp, idat_path)
+    step1_start_time = time.time()
+    # print(f"Step 1: Converting IDAT to GTC for {barcode}...")
+    # gtc_files = convert_idat_to_gtc(iaap, bpm, egt, out_tmp, idat_path, debug=debug)
     # if not gtc_files:
     #     print(f"Failed to convert IDAT to GTC for {barcode}")
     #     return False
     
-    # print(f"Successfully created {len(gtc_files)} GTC files")
+    step1_duration = time.time() - step1_start_time
+    # print(f"Step 1 complete: Created {len(gtc_files)} GTC files in {step1_duration:.2f} seconds")
     
     # Step 2: Process all GTC files and create per-sample VCF files
-    # print(f"Converting GTC files to per-sample VCF files...")
+    step2_start_time = time.time()
+    print(f"Step 2: Converting GTC files to per-sample VCF files...")
     # vcf_files = gtc_to_vcf(out_tmp, out_tmp, bpm, bpm_csv, egt, ref_fasta, out_tmp, 
     #                  bcftools_plugins_path, threads=bcftools_threads, 
-    #                  memory=f"{int(total_memory_gb * 0.7)}G")  # Use 70% of available memory
+    #                  memory=f"{int(total_memory_gb * 0.7)}G")
     
     # if not vcf_files:
     #     print(f"Failed to convert GTC files to VCF for {barcode}")
     #     return False
     
-    # Step 3: Process each sample VCF file in parallel
-    vcf_files = sorted(glob.glob(os.path.join(out_tmp, '*.vcf.gz')))
-    print(f"Processing {len(vcf_files)} sample VCF files for {barcode}...")
+    step2_duration = time.time() - step2_start_time
+    # glob vcf_files for testing
+    vcf_files = glob.glob(os.path.join(out_tmp, "*.vcf.gz"))
+    print(vcf_files)
+    print(f"Step 2 complete: Created {len(vcf_files)} VCF files in {step2_duration:.2f} seconds")
     
-    if total_memory_gb < 16:
-        chunk_size = 50000
-    elif total_memory_gb < 32:
-        chunk_size = 150000
-    else:
-        chunk_size = 200000
+    # Step 3: Process each sample VCF file in parallel
+    step3_start_time = time.time()
+    print(f"Step 3: Processing {len(vcf_files)} sample VCF files for {barcode}...")
+    
+    # Calculate max workers based on available memory and CPU
+    memory_per_worker = 2  # Assume each worker needs ~2GB
+    workers_by_memory = int(total_memory_gb / memory_per_worker * 0.7)  # Use 70% of available memory
+    max_workers = min(
+        cpu_count,  # Don't exceed CPU count
+        workers_by_memory,  # Don't exceed memory capacity
+        len(vcf_files),  # Don't exceed number of files
+        8  # Hard cap at 8 workers
+    )
+    
+    print(f"Resource allocation:")
+    print(f"- Total Memory: {total_memory_gb:.1f}GB")
+    print(f"- Max Workers: {max_workers}")
+    
+    # Adjust chunk size based on available memory per worker
+    memory_per_chunk = total_memory_gb / max_workers * 0.3  # Use 30% of worker's memory for chunks
+    chunk_size = int(min(
+        50000 * (memory_per_chunk / 2),  # Scale chunk size with available memory
+        200000  # Hard cap at 200K rows
+    ))
+    print(f"- Chunk size: {chunk_size}")
     
     success = True
-    with ProcessPoolExecutor(max_workers=min(cpu_count, len(vcf_files))) as executor:
-        futures = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Group VCF files by size for better load balancing
+        vcf_sizes = [(f, os.path.getsize(f)) for f in vcf_files]
+        vcf_sizes.sort(key=lambda x: x[1], reverse=True)  # Process largest files first
         
-        for vcf_file in vcf_files:
-            sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
-            # Change output path to be per-sample directory in the final output location
-            sample_output_dir = os.path.join(output_directory, sample_id)
-            os.makedirs(sample_output_dir, exist_ok=True)
+        # Process files in batches to control memory usage
+        batch_size = max_workers
+        batch_count = 0
+        for i in range(0, len(vcf_sizes), batch_size):
+            batch_count += 1
+            batch = vcf_sizes[i:i + batch_size]
+            batch_start_time = time.time()
+            print(f"Processing batch {batch_count} ({len(batch)} files)...")
             
-            # Use temporary directory for chunks
-            temp_output_path = os.path.join(out_tmp, f"temp_{sample_id}")
+            futures = []
             
-            # Submit processing task to executor
-            future = executor.submit(
-                process_single_sample_vcf, 
-                vcf_file,
-                temp_output_path,
-                chunk_size,
-                sample_output_dir  # Pass final output directory
-            )
-            futures.append((sample_id, future))
-        
-        # Wait for all tasks to complete and check for errors
-        for sample_id, future in futures:
-            try:
-                if not future.result():
-                    print(f"Failed to process SNP data for sample {sample_id}")
+            for vcf_file, _ in batch:
+                sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
+                # Use barcode_out_path instead of creating separate sample directories
+                sample_output_dir = barcode_out_path
+                
+                temp_output_path = os.path.join(out_tmp, f"temp_{sample_id}")
+                
+                future = executor.submit(
+                    process_single_sample_vcf, 
+                    vcf_file,
+                    temp_output_path,
+                    chunk_size,
+                    sample_output_dir,
+                    sample_id
+                )
+                futures.append((sample_id, future))
+            
+            # Wait for current batch to complete before starting next batch
+            for sample_id, future in futures:
+                try:
+                    if not future.result():
+                        print(f"Failed to process SNP data for sample {sample_id}")
+                        success = False
+                except Exception as e:
+                    print(f"Error processing sample {sample_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     success = False
-            except Exception as e:
-                print(f"Error processing sample {sample_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                success = False
+            
+            batch_duration = time.time() - batch_start_time
+            print(f"Batch {batch_count} completed in {batch_duration:.2f} seconds")
+            
+            # Force garbage collection between batches
+            import gc
+            gc.collect()
+    
+    step3_duration = time.time() - step3_start_time
     
     if not success:
         print(f"Some samples failed to process for {barcode}")
         return False
     
-    print(f"Processing complete for {barcode}")
+    print(f"Step 3 complete: Processed VCF files in {step3_duration:.2f} seconds")
     
-    # Clean up temporary chunks directory but keep GTC and VCF files if requested
+    # Step 4: Clean up temporary files
+    step4_start_time = time.time()
+    print(f"Step 4: Cleaning up temporary files...")
+    
     try:
-        import shutil
-        
         # Remove chunk files which are always temporary
         chunk_files = glob.glob(os.path.join(out_tmp, "temp_*"))
         for file_path in chunk_files:
@@ -571,16 +487,40 @@ def process_idat_files(idat_path, output_directory, bpm, bpm_csv, egt, ref_fasta
     except Exception as e:
         print(f"Warning: Error during cleanup: {str(e)}")
     
+    step4_duration = time.time() - step4_start_time
+    print(f"Step 4 complete: Cleanup finished in {step4_duration:.2f} seconds")
+    
+    # Calculate and display total pipeline runtime
+    pipeline_duration = time.time() - pipeline_start_time
+    
+    # Convert seconds to hours, minutes, seconds format
+    hours, remainder = divmod(pipeline_duration, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print("\n" + "="*50)
+    print(f"Pipeline Execution Summary for {barcode}")
+    print("="*50)
+    print(f"Step 1 (IDAT to GTC): {step1_duration:.2f} seconds")
+    print(f"Step 2 (GTC to VCF): {step2_duration:.2f} seconds")
+    print(f"Step 3 (VCF Processing): {step3_duration:.2f} seconds")
+    print(f"Step 4 (Cleanup): {step4_duration:.2f} seconds")
+    print("-"*50)
+    print(f"Total Runtime: {int(hours):02d}:{int(minutes):02d}:{seconds:.2f} (HH:MM:SS)")
+    print(f"Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(pipeline_start_time))}")
+    print(f"End Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(pipeline_start_time + pipeline_duration))}")
+    print("="*50)
+    
     return True
 
 
-def process_single_sample_vcf(vcf_file, out_path, chunk_size=100000, final_output_dir=None):
+def process_single_sample_vcf(vcf_file, out_path, chunk_size=100000, final_output_dir=None, sample_id=None):
     """Process a single-sample VCF file."""
     print(f"Processing sample VCF file: {vcf_file}")
     start_time = time.time()
     
-    # Get sample ID from filename
-    sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
+    # Get sample ID from filename if not provided
+    if sample_id is None:
+        sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
     
     # Create output directory if needed
     if out_path:
@@ -626,42 +566,53 @@ def process_single_sample_vcf(vcf_file, out_path, chunk_size=100000, final_outpu
         current_chunk = []
         processed_lines = 0
         
-        for line in f:
-            line_data = line.strip().split('\t')
-            current_chunk.append(line_data)
-            processed_lines += 1
-            
-            # Process when chunk reaches desired size or at end of file
-            if len(current_chunk) >= chunk_size:
-                # Process this chunk
-                chunk_df = pd.DataFrame(current_chunk, columns=names)
-                
-                # For a single sample VCF, we don't need to melt - just extract the data directly
-                processed_chunk = process_single_sample_chunk(chunk_df, sample_ids[0])
-                
-                # Write chunk to parquet
-                if out_path:
-                    chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-                    processed_chunk.to_parquet(chunk_file)
-                
-                # Report progress
-                progress = (processed_lines / total_lines) * 100
-                elapsed = time.time() - start_time
-                print(f"Sample {sample_id} - Progress: {progress:.2f}% ({processed_lines}/{total_lines} lines) - {elapsed:.2f} seconds elapsed")
-                
-                # Clear memory
-                del chunk_df, processed_chunk, current_chunk
-                current_chunk = []
-                chunk_count += 1
-        
-        # Process the last chunk if any
-        if current_chunk:
-            chunk_df = pd.DataFrame(current_chunk, columns=names)
+        # Add parallel chunk processing
+        def process_chunk(chunk_data):
+            chunk_df = pd.DataFrame(chunk_data, columns=names)
             processed_chunk = process_single_sample_chunk(chunk_df, sample_ids[0])
+            return processed_chunk
+        
+        # Use ThreadPoolExecutor for I/O-bound operations
+        with ThreadPoolExecutor(max_workers=4) as chunk_executor:
+            current_chunks = []
+            chunk_futures = []
             
-            if out_path:
-                chunk_file = f"{out_path}_chunk_{chunk_count}.parquet"
-                processed_chunk.to_parquet(chunk_file)
+            for line in f:
+                line_data = line.strip().split('\t')
+                current_chunks.append(line_data)
+                processed_lines += 1
+                
+                if len(current_chunks) >= chunk_size:
+                    # Submit chunk for processing
+                    chunk_future = chunk_executor.submit(process_chunk, current_chunks)
+                    chunk_futures.append((chunk_count, chunk_future))
+                    current_chunks = []
+                    chunk_count += 1
+                
+            # Process remaining chunks
+            if current_chunks:
+                chunk_future = chunk_executor.submit(process_chunk, current_chunks)
+                chunk_futures.append((chunk_count, chunk_future))
+            
+            # Write results as they complete - Use extension-less temp files
+            for chunk_idx, future in chunk_futures:
+                try:
+                    processed_chunk = future.result()
+                    # Remove .parquet extension
+                    chunk_file = f"{out_path}_chunk_{chunk_idx}"
+                    # Write to temporary file with .tmp suffix only
+                    temp_file = f"{chunk_file}.tmp"
+                    processed_chunk.to_parquet(temp_file)
+                    # Then rename (atomic operation on most file systems)
+                    os.rename(temp_file, chunk_file)
+                    
+                    # After writing - verify without extension
+                    verification_df = pd.read_parquet(chunk_file)
+                    if len(verification_df) != len(processed_chunk):
+                        raise ValueError("Data integrity check failed")
+                except Exception as e:
+                    print(f"Error processing chunk {chunk_idx}: {e}")
+                    # Implement retry logic or fallback
     
     print(f"Sample {sample_id} - Processed {chunk_count + 1} chunks in {time.time() - start_time:.2f} seconds")
     
@@ -669,7 +620,12 @@ def process_single_sample_vcf(vcf_file, out_path, chunk_size=100000, final_outpu
     if out_path:
         # If final_output_dir is specified, use that instead of the default merged location
         output_dir = final_output_dir if final_output_dir else f"{out_path}_merged"
-        merge_parquet_chunks(f"{out_path}_chunk_*.parquet", output_dir)
+        
+        # Use sample_id in the output file name without .parquet extension
+        output_file = os.path.join(output_dir, f"{sample_id}")
+        
+        # Modified merge function call to create single file per sample
+        merge_sample_chunks(f"{out_path}_chunk_*", output_file, sample_id)
     
     return True
 
@@ -686,8 +642,8 @@ def process_single_sample_chunk(chunk_df, sample_id):
         if chrom_cols:
             chrom_col = chrom_cols[0]
     
-    # Extract data for this sample - no need to melt since we only have one sample
-    sample_data = chunk_df[[chrom_col, 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT', sample_id]].copy()
+    # Extract necessary columns
+    sample_data = chunk_df[[chrom_col, 'POS', 'ID', 'FORMAT', sample_id]].copy()
     
     # Rename CHROM column if needed
     if chrom_col != 'CHROM':
@@ -697,95 +653,53 @@ def process_single_sample_chunk(chunk_df, sample_id):
     metric_cols = ['GT','GQ','IGC','BAF','LRR','NORMX','NORMY','R','THETA','X','Y']
     sample_data[metric_cols] = sample_data[sample_id].str.split(':', expand=True, n=10)
     
-    # Extract information from INFO column
-    sample_data['GenTrain_Score'] = sample_data['INFO'].apply(
-        lambda info: extract_info(info, idx=10, pattern='GenTrain_Score=')
-    )
-    sample_data['ALLELE_A'] = sample_data['INFO'].apply(
-        lambda info: extract_info(info, idx=1, pattern='ALLELE_A=')
-    )
-    sample_data['ALLELE_B'] = sample_data['INFO'].apply(
-        lambda info: extract_info(info, idx=2, pattern='ALLELE_B=')
-    )
-    
-    # Drop unused columns
-    sample_data = sample_data.drop(columns=[
-        'QUAL', 'FILTER', 'INFO', 'GQ', 'IGC', 
-        'NORMX', 'NORMY', 'X', 'Y', sample_id, 'FORMAT'
-    ])
-    
-    # Clean up chromosome column
+    # Clean up chromosome column (still needed for merging, will be excluded later)
     sample_data['CHROM'] = sample_data['CHROM'].astype(str).str.replace('chr','')
     
-    # Map GT values
-    gtype_map = {'0/0':'AA', '0/1':'AB', '1/1':'BB', './.':'NC'}
-    sample_data['GType'] = sample_data['GT'].map(gtype_map)
+    # Map GT values using -9 for missing instead of NaN
+    numeric_gt_map = {'0/0': 0, '0/1': 1, '1/1': 2, './.': -9}
+    sample_data['GT'] = sample_data['GT'].map(numeric_gt_map)
     
-    # Store current GT values and then drop the original GT column
-    orig_gt = sample_data['GT'].copy()  # Save original values
-    sample_data = sample_data.drop(columns=['GT'])  # Drop original GT column
+    # Handle any missing values not caught by the mapping
+    sample_data['GT'] = sample_data['GT'].fillna(-9)
     
-    # Process GT values (now starting fresh)
-    sample_data['GT'] = sample_data['GType']  # Start with GType values
+    # Convert numeric columns
+    for col in ['BAF', 'LRR', 'R', 'THETA']:
+        sample_data[col] = pd.to_numeric(sample_data[col], errors='coerce')
     
-    # Apply the transformations directly to the GT column
-    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '1'), 'GT'] = 'BB'
-    sample_data.loc[(sample_data['GType'] == 'AA') & (sample_data['ALLELE_A'].astype(str) == '0'), 'GT'] = 'AA'
-    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '1'), 'GT'] = 'BB'
-    sample_data.loc[(sample_data['GType'] == 'BB') & (sample_data['ALLELE_B'].astype(str) == '0'), 'GT'] = 'AA'
-    sample_data.loc[(sample_data['GType'] == 'AB'), 'GT'] = 'AB'
-    sample_data.loc[(sample_data['GType'] == 'NC'), 'GT'] = 'NC'
-    sample_data['GT'] = sample_data['GT'].fillna('NC')
+    # Add IID column (replacing Sample_ID)
+    sample_data['IID'] = sample_id
     
-    # Process alternate alleles
-    sample_data['a1'] = sample_data['REF']
-    sample_data.loc[sample_data['ALLELE_A'].astype(str) == '1', 'a1'] = sample_data.loc[sample_data['ALLELE_A'].astype(str) == '1', 'ALT']
-    
-    sample_data['a2'] = sample_data['REF']
-    sample_data.loc[sample_data['ALLELE_B'].astype(str) == '1', 'a2'] = sample_data.loc[sample_data['ALLELE_B'].astype(str) == '1', 'ALT']
-    
-    # Add sample ID column
-    sample_data['Sample_ID'] = sample_id
-    
-    # Rename columns to match expected output format
+    # Rename columns
     final_df = sample_data.rename(columns={
-        'CHROM': 'chromosome',
-        'POS': 'position',
         'ID': 'snpID',
-        'REF': 'Ref',
-        'ALT': 'Alt'
+        'CHROM': 'chromosome',
+        'POS': 'position'
     })
     
-    # Convert types
+    # Set correct types - now GT is integer
     final_df = final_df.astype({
         'chromosome': str,
         'position': int,
         'snpID': str,
-        'Sample_ID': str,
-        'Ref': str,
-        'Alt': str,
-        'ALLELE_A': int,
-        'ALLELE_B': int,
+        'IID': str,
         'BAF': float,
         'LRR': float,
         'R': float,
         'THETA': float,
-        'GenTrain_Score': float,
-        'GType': str,
-        'GT': str
+        'GT': int  # Using -9 for missing
     })
     
-    # Select and order columns
-    out_colnames = [
-        'chromosome', 'position', 'snpID', 'Sample_ID', 'Ref', 'Alt',
-        'ALLELE_A', 'ALLELE_B', 'BAF', 'LRR', 'R', 'THETA', 
-        'GenTrain_Score', 'GType', 'GT', 'a1', 'a2'
-    ]
+    # Select only required columns for output
+    required_columns = ['snpID', 'BAF', 'LRR', 'R', 'THETA', 'GT']
     
-    return final_df[out_colnames]
+    # We still need chromosome and position for merging but they'll be excluded in final output
+    working_columns = ['chromosome', 'position'] + required_columns
+    
+    return final_df[working_columns]
 
 def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all", 
-                         output_format="csv", partition_by_chromosome=False):
+                        output_format="csv", partition_by_chromosome=False):
     """
     Extract rows and specific columns from a VCF file, split INFO and FORMAT fields.
     Uses a predefined list of columns for consistent extraction.
@@ -821,7 +735,7 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
     ]
     
     # Define sample-specific columns
-    sample_specific_list = ['Sample_ID', 'GT', 'GQ', 'IGC', 'BAF', 'LRR', 'NORMX', 'NORMY', 'R', 'THETA', 'X', 'Y']
+    sample_specific_list = ['IID', 'GT', 'GQ', 'IGC', 'BAF', 'LRR', 'NORMX', 'NORMY', 'R', 'THETA', 'X', 'Y']
     
     # Print extraction info
     if num_rows is None:
@@ -835,7 +749,6 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
     sample_id = os.path.basename(vcf_file).replace('.vcf.gz', '')
     
     # --- OPTIMIZATION 1: Use chunked reading for large files ---
-    # This is especially helpful when num_rows is None (reading all rows)
     chunk_size = 100000  # Adjust based on memory availability
     
     # Open file for reading
@@ -956,8 +869,15 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
     
     print(f"Read {len(result_df)} total rows")
     
-    # Always include a1 and a2 in the output if they exist
-    always_include = ['ID', 'IID']
+    # Define columns to always include based on the mode
+    always_include = []
+    if columns != "metadata":  # Only include ID and IID for non-metadata extractions
+        always_include = ['ID', 'IID']
+    else:
+        # For metadata, only include ID
+        always_include = ['ID']
+    
+    # Add a1 and a2 to always include if they exist
     if 'a1' in result_df.columns:
         always_include.append('a1')
     if 'a2' in result_df.columns:
@@ -971,7 +891,7 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
         # Filter to only metadata columns
         available_metadata = [col for col in metadata_cols_list if col in result_df.columns]
         
-        # Always include specified columns if they exist
+        # Always include specified columns if they exist (except IID for metadata)
         for col in always_include:
             if col not in available_metadata and col in result_df.columns:
                 available_metadata.append(col)
@@ -995,10 +915,11 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
         if 'ID' not in available_columns and 'ID' in result_df.columns:
             available_columns.append('ID')
         
-        # Check if we need to include the IID column
-        has_sample_column = any(col in sample_specific_list for col in available_columns)
-        if has_sample_column and 'IID' not in available_columns and 'IID' in result_df.columns:
-            available_columns.append('IID')
+        # Check if we need to include the IID column (not for metadata)
+        if columns != "metadata":
+            has_sample_column = any(col in sample_specific_list for col in available_columns)
+            if has_sample_column and 'IID' not in available_columns and 'IID' in result_df.columns:
+                available_columns.append('IID')
         
         # Always include a1 and a2 if they exist and not already specified
         if 'a1' not in available_columns and 'a1' in result_df.columns:
@@ -1025,23 +946,27 @@ def extract_vcf_columns(vcf_file, output_path=None, num_rows=10, columns="all",
             if partition_by_chromosome:
                 if 'CHROM' not in filtered_df.columns:
                     print("Warning: Cannot partition by chromosome because 'CHROM' column is not in the filtered data.")
-                    filtered_df.to_parquet(output_path, index=False)
-                    print(f"Saved VCF data to Parquet (unpartitioned): {output_path}")
+                    # Remove .parquet extension if it exists
+                    clean_path = output_path.replace('.parquet', '') if output_path.endswith('.parquet') else output_path
+                    filtered_df.to_parquet(clean_path, index=False)
+                    print(f"Saved VCF data to Parquet (unpartitioned): {clean_path}")
                 else:
+                    # Remove .parquet extension if it exists
                     parquet_dir = output_path.replace('.parquet', '') if output_path.endswith('.parquet') else output_path
                     os.makedirs(parquet_dir, exist_ok=True)
                     
-                    # --- OPTIMIZATION 4: Use better compression for parquet ---
                     filtered_df.to_parquet(
                         parquet_dir,
                         partition_cols=['CHROM'],
-                        compression='snappy',  # Faster than default
+                        compression='snappy',
                         index=False
                     )
                     print(f"Saved VCF data to Parquet (partitioned by chromosome): {parquet_dir}")
             else:
-                filtered_df.to_parquet(output_path, compression='snappy', index=False)
-                print(f"Saved VCF data to Parquet: {output_path}")
+                # Remove .parquet extension if it exists
+                clean_path = output_path.replace('.parquet', '') if output_path.endswith('.parquet') else output_path
+                filtered_df.to_parquet(clean_path, compression='snappy', index=False)
+                print(f"Saved VCF data to Parquet: {clean_path}")
         else:
             print(f"Warning: Unrecognized output format '{output_format}'. Data not saved.")
     
@@ -1130,10 +1055,10 @@ def _process_vcf_chunk(chunk_df, vcf_sample_cols, sample_id, faster=True):
     if columns_to_drop:
         chunk_df = chunk_df.drop(columns=columns_to_drop)
     
-    # Add Sample_ID and IID columns
-    if 'Sample_ID' not in chunk_df.columns:
-        chunk_df['Sample_ID'] = sample_id
-    chunk_df['IID'] = chunk_df['Sample_ID']
+
+    if 'IID' not in chunk_df.columns:
+        chunk_df['IID'] = sample_id
+    # chunk_df['IID'] = chunk_df['IID']
     
     # Create a1 and a2 columns that are properly aligned to A and B alleles
     if all(col in chunk_df.columns for col in ['REF', 'ALT', 'ALLELE_A', 'ALLELE_B']):
@@ -1154,6 +1079,132 @@ def _process_vcf_chunk(chunk_df, vcf_sample_cols, sample_id, faster=True):
             chunk_df.loc[mask_a2, 'a2'] = chunk_df.loc[mask_a2, 'ALT']
     
     return chunk_df
+
+def merge_sample_chunks(chunk_pattern, output_file, sample_id):
+    """Merge all chunks for a sample into a single parquet file, partitioned by chromosome."""
+    chunk_files = sorted(glob.glob(chunk_pattern))
+    
+    if not chunk_files:
+        print(f"No chunk files found for sample {sample_id}")
+        print(f"Looking for pattern: {chunk_pattern}")
+        
+        # Create an empty output file with the correct structure
+        # We need to include chromosome for partitioning
+        empty_df = pd.DataFrame({
+            'chromosome': [],
+            'snpID': [],
+            'BAF': [],
+            'LRR': [],
+            'R': [],
+            'THETA': [],
+            'GT': []
+        })
+        
+        # Set the correct types
+        empty_df = empty_df.astype({
+            'chromosome': str,
+            'snpID': str,
+            'BAF': float,
+            'LRR': float,
+            'R': float,
+            'THETA': float,
+            'GT': int
+        })
+        
+        # Create output directory if needed
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        # Write the empty DataFrame with chromosome partitioning
+        empty_df.to_parquet(output_file, compression='snappy', index=False, 
+                           partition_cols=['chromosome'])
+        print(f"Created empty partitioned output for sample {sample_id}: {output_file}")
+        return True
+    
+    print(f"Merging {len(chunk_files)} chunk files for sample {sample_id}")
+    
+    try:
+        # Read and concatenate all chunk files
+        dfs = []
+        for chunk_file in chunk_files:
+            df = pd.read_parquet(chunk_file)
+            dfs.append(df)
+        
+        if not dfs:
+            print(f"No data found in chunk files for sample {sample_id}")
+            return False
+            
+        # Concatenate all dataframes
+        merged_df = pd.concat(dfs, ignore_index=True)
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        # Remove position but keep chromosome for partitioning
+        # Add final_df containing only the columns we need plus chromosome
+        final_columns = ['chromosome', 'snpID', 'BAF', 'LRR', 'R', 'THETA', 'GT']
+        final_df = merged_df[final_columns]
+        
+        # Write with chromosome partitioning
+        # Use a temporary directory with a unique name to avoid conflicts
+        import uuid
+        temp_dir = f"{output_file}_{uuid.uuid4().hex}.tmp"
+        
+        # Ensure the temp directory doesn't exist before creating it
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+        # Ensure the parent directory exists
+        os.makedirs(os.path.dirname(temp_dir), exist_ok=True)
+        
+        # Write to the temporary directory with partitioning
+        final_df.to_parquet(
+            temp_dir, 
+            compression='snappy',
+            index=False,
+            partition_cols=['chromosome']
+        )
+        
+        # Check if output_file is a directory or a file
+        # If it's a file, we need to handle differently than if it's a directory
+        if os.path.exists(output_file):
+            if os.path.isdir(output_file):
+                # It's a directory, remove it
+                shutil.rmtree(output_file)
+            else:
+                # It's a file, just remove the file
+                os.remove(output_file)
+                
+        # Create parent directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        # Move the temp directory to the final location
+        shutil.move(temp_dir, output_file)
+        
+        print(f"Successfully created partitioned files for sample {sample_id}: {output_file}")
+        
+        # Verify at least one of the partition files
+        chroms = merged_df['chromosome'].unique()
+        if len(chroms) > 0:
+            # Check the first chromosome's partition
+            part_path = os.path.join(output_file, f"chromosome={chroms[0]}")
+            if os.path.exists(part_path):
+                # List all partitions in the directory
+                parts = os.listdir(output_file)
+                print(f"Created {len(parts)} chromosome partitions")
+            else:
+                print(f"Warning: Expected partition not found at {part_path}")
+        
+        # Remove chunk files after successful merge
+        for chunk_file in chunk_files:
+            os.remove(chunk_file)
+            
+        return True
+    except Exception as e:
+        print(f"Error merging chunks for sample {sample_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 
 
 ####### example for extract_vcf_columns #######
