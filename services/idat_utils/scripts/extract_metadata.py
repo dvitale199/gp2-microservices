@@ -1,6 +1,7 @@
 ''' 
 the following was run in a vm with 8 cores and 16GB of memory
 the data for a single barcode was copied from gcs storage to the vm
+this also contains a bunch of random checks to ensure data integrity
 '''
 
 import numpy as np
