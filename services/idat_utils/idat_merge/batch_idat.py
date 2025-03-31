@@ -27,10 +27,10 @@ def upload_to_gcs(bucket_name: str, local_path: str, blob_path: str):
 
 
 # 2 buckets mounted: 1 for inputs, 1 for outputs
-# def create_script_job_with_buckets(project_id: str, region: str, job_name: str, bucket_name_input: str,
-#                                    bucket_name_output: str, script_text: str) -> batch_v1.Job:
 def create_script_job_with_buckets(project_id: str, region: str, job_name: str, bucket_name_input: str,
-                                   bucket_name_output: str, docker_image: str) -> batch_v1.Job:
+                                   bucket_name_output: str, script_text: str) -> batch_v1.Job:
+# def create_script_job_with_buckets(project_id: str, region: str, job_name: str, bucket_name_input: str,
+#                                    bucket_name_output: str, docker_image: str) -> batch_v1.Job:
     """
     This method shows how to create a sample Batch Job that will run
     a simple command on Cloud Compute instances.
@@ -52,12 +52,13 @@ def create_script_job_with_buckets(project_id: str, region: str, job_name: str, 
     runnable = batch_v1.Runnable()
 
     # This would replace runnable script
-    runnable.container = batch_v1.Runnable.Container()
-    runnable.container.image_uri = docker_image
-    # runnable.script = batch_v1.Runnable.Script()
-    # runnable.script.text = script_text
+    # runnable.container = batch_v1.Runnable.Container()
+    # runnable.container.image_uri = docker_image
+    # runnable.container.entry_point = "/bin/sh"
 
-    # TODO: ??? Divide the jobs into tasks.
+    runnable.script = batch_v1.Runnable.Script()
+    runnable.script.text = script_text
+
     task = batch_v1.TaskSpec()
     task.runnables = [runnable]
 
@@ -113,26 +114,6 @@ def create_script_job_with_buckets(project_id: str, region: str, job_name: str, 
 
     return client.create_job(create_request)
 
-'''
-TODO:
-figure out how to get key; geno files
-    - do we want to download to a temp dir?
-configure all paths?
-'''
-key_path = ""
-
-STUDY = ""
-
-key = pd.read_csv(key_path, sep = '\t', low_memory = False)
-key = key[key['study'] == STUDY]
-
-# check if previous samples exist
-test = pd.read_csv(f'/home/levineks/gp2_genotools_data/merged_by_cohort_r10/GP2_merge_{STUDY}.fam', sep = '\s+', header = None)
-list_included = list(test[1])
-# the samples we still need to process are the ones that were NOT included in the prevous merged file
-key = key[~key['GP2sampleID'].isin(list_included)]
-barcode_list = list(set(list(key['SentrixBarcode_A'])))
-
 
 def convert_idat_to_ped(iaap, bpm, egt, raw_plink_path, idat_path):
     """Convert IDAT files to PED format."""
@@ -176,42 +157,3 @@ def chunk_list(iterable, n):
     args = [iter(iterable)] * n
     return zip_longest(*args)
 
-
-count = 0 # Update the count with the last job # that you ran:
-codes_per_job = 5 # 8
-# Loop through each chunk of 8 codes and create a single job
-for chunk in chunk_list(barcode_list, codes_per_job):
-    # Filter out any None values from the last incomplete chunk
-    codes = [code for code in chunk if code is not None]
-
-    # Generate a unique job name
-    count += 1
-    job_name = f'idattoped{STUDY.lower()}{count}'
-
-    # Create a combined script for the N codes
-    # script = f"""
-    #     #!/bin/bash
-
-    #     # Install and activate PLINK
-    #     chmod +x ./gp2_genotools_data/batch_files/plink2_module.sh
-    #     ./gp2_genotools_data/batch_files/plink2_module.sh
-    # """
-
-    script = ""
-    # Add commands for each code in the chunk
-    for code in codes:
-        script += f"""
-        # Make analysis script executable and run for a specific code
-        chmod +x ./gp2_genotools_data/batch_files/convert_idats_to_ped.sh
-        ./gp2_genotools_data/batch_files/convert_idats_to_ped.sh {code}
-        """
-
-    # Create the job with the combined script
-    create_script_job_with_buckets(
-        project_id = "gp2-release-terra",
-        region = 'europe-west4',
-        job_name = job_name,
-        bucket_name_input= 'gp2_idats',
-        bucket_name_output= 'gp2_genotools_data',
-        script_text = script
-    )
