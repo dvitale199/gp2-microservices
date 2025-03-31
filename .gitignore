@@ -6,3 +6,4 @@ gp2_carriers.ipynb
 .secrets/
 services/idat_utils/data/services/idat_utils/bin/
 **data/
+services/browser_api/deploy.sh
