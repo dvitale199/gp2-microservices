@@ -173,8 +173,6 @@ def ancestry_data(proj_labels, proj_samples, ref_pca, proj_pca, out_path):
 
 def ancestry_model(confusion_matrix, out_path):
     # Ancestry Page - Model Performance
-    # confusion_matrix.set_index(confusion_matrix.columns, inplace=True) # do in app
-
     tp = np.diag(confusion_matrix)
     col_sum = confusion_matrix.sum(axis=0)
     row_sum = confusion_matrix.sum(axis=1)
@@ -236,9 +234,9 @@ def prep_browser_files(gt_output: str, temp_dir: str) -> list:
     prune_steps(proj_samples, df_qc, temp_dir)
     related_qc(rel_samples, temp_dir)
     variant_qc(df_qc, temp_dir)
-    ancestry_data(proj_labels, proj_samples, ref_pca, proj_pca, temp_dir)
-    # ancestry_model(confusion_matrix, temp_dir)
-    # ancestry_breakdown(ref_pca, proj_labels, temp_dir)
+    ancestry_data(proj_labels.copy(), proj_samples, ref_pca, proj_pca, temp_dir)
+    ancestry_model(confusion_matrix, temp_dir)
+    ancestry_breakdown(ref_pca, proj_labels.copy(), temp_dir)
 
     # Get list of all output files
     final_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
