@@ -115,7 +115,13 @@ def create_script_job_with_buckets(project_id: str, region: str, job_name: str, 
     return client.create_job(create_request)
 
 
-def convert_idat_to_ped(iaap, bpm, egt, raw_plink_path, idat_path):
+def chunk_list(iterable, n):
+    """Helper function to chunk the list into groups of 8."""
+    args = [iter(iterable)] * n
+    return zip_longest(*args)
+
+
+def convert_idat_to_ped(key, study, iaap, bpm, egt, raw_plink_path, idat_path, missing_idat_dir, map_file):
     """Convert IDAT files to PED format."""
 
     # Set environment variable for .NET Core to run without globalization support
@@ -134,13 +140,51 @@ def convert_idat_to_ped(iaap, bpm, egt, raw_plink_path, idat_path):
     -p \
     -t 8'
 
-    # Use env parameter to pass environment variables
-    result = subprocess.run(idat_to_ped_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    # create script to convert idat to ped
+    with open(f'./gp2_genotools_data/batch_files/convert_idats_to_ped.sh', 'w') as f:
+        f.write('#!/bin/bash\n')
+        f.write('BARCODE=$1\n\n')
+        f.write(f'{idat_to_ped_cmd}\n')
+    f.close()
 
-    if result.returncode != 0:
-        print(f"Command failed with exit code {result.returncode}")
-        print(f"Error: {result.stderr.decode('utf-8')}")
-        return False
+    # convert idats to ped
+    count = 0 # Update the count with the last job # that you ran
+    codes_per_job = 5 # 8
+    # Loop through each chunk of 8 codes and create a single job
+    barcode_list = list(set(list(key['SentrixBarcode_A'])))
+    for chunk in chunk_list(barcode_list, codes_per_job):
+        # Filter out any None values from the last incomplete chunk
+        codes = [code for code in chunk if code is not None]
+
+        # Generate a unique job name
+        count += 1
+        job_name = f'idattoped{study.lower()}{count}'
+
+        script = """
+            #!/bin/bash
+
+            # Install and activate PLINK
+            chmod +x ./gp2_genotools_data/batch_files/plink2_module.sh
+            ./gp2_genotools_data/batch_files/plink2_module.sh
+        """
+
+        # Add commands for each code in the chunk
+        for code in codes:
+            script += f"""
+            # Make analysis script executable and run for a specific code
+            chmod +x ./gp2_genotools_data/batch_files/convert_idats_to_ped.sh
+            ./gp2_genotools_data/batch_files/convert_idats_to_ped.sh {code}
+            """
+
+        # Create the job with the combined script
+        create_script_job_with_buckets(
+            project_id = "gp2-release-terra",
+            region = 'europe-west4',
+            job_name = job_name,
+            bucket_name_input= 'gp2_idats',
+            bucket_name_output= 'gp2_genotools_data',
+            script_text = script
+        )
 
     # Get the list of PED files after conversion
     all_ped_files = glob.glob(os.path.join(raw_plink_path, "*.ped"))
@@ -148,12 +192,144 @@ def convert_idat_to_ped(iaap, bpm, egt, raw_plink_path, idat_path):
     # Find new PED files by comparing with the initial set
     new_ped_files = [f for f in all_ped_files if f not in initial_ped_files]
 
-    print(f"Generated PED files")
+    # copy map file to match name of each ped
+    # check for missing ped files
+    missing_peds = []
+    missing_cnt = 0 # check for missing ped files
+    for filename in key.IID:
+        ped = f'{raw_plink_path}/{filename}.ped'
+        out_map = f'{raw_plink_path}/{filename}.map'
+        if os.path.isfile(ped):
+            shutil.copyfile(src=map_file, dst=out_map)
+        else:
+            missing_cnt += 1
+            missing_peds.append(filename)
+
+    # create missing_ped file for reference
+    with open(f'{missing_idat_dir}/missing_peds_{study}.txt', 'w') as f:
+        for m_ped in missing_peds:
+            f.write(f'{m_ped}\n')
+    f.close()
+
+    # return list of generated ped files
     return new_ped_files
 
 
-def chunk_list(iterable, n):
-    """Helper function to chunk the list into groups of 8."""
-    args = [iter(iterable)] * n
-    return zip_longest(*args)
+def convert_ped_to_bed(key, study, raw_plink_path, missing_idat_dir):
+    """Convert PED files to BED format."""
 
+    # create script to convert ped to bed
+    ped_file = f'./gp2_genotools_data/ped_bed/${{FILENAME}}'
+    make_bed_cmd = f"./exec/plink_module.sh --file {ped_file} --make-bed --out {ped_file}"
+    with open(f'./gp2_genotools_data/batch_files/convert_ped_to_bed.sh', 'w') as f:
+        f.write('#!/bin/bash\n\n')
+        f.write('FILENAME=$1\n\n')
+        f.write(f'{make_bed_cmd}\n')
+    f.close()
+
+    filename_list = list(key['IID'])
+
+    # Define the number of codes to process per job (8)(Up this amount x3)
+    codes_per_job = 60
+    # Loop through each chunk of 8 codes and create a single job
+    for chunk in chunk_list(filename_list, codes_per_job):
+        # Filter out any None values from the last incomplete chunk
+        codes = [code for code in chunk if code is not None]
+
+        # Generate a unique job name
+        count += 1
+        job_name = f'pedtobed{study.lower()}{count}'
+
+        # Create a combined script for the N codes
+        script = """
+            #!/bin/bash
+
+            # Install and activate PLINK
+            chmod +x ./gp2_genotools_data/batch_files/plink_module.sh
+            ./gp2_genotools_data/batch_files/plink_module.sh
+        """
+
+        # Add commands for each code in the chunk
+        for code in codes:
+            script += f"""
+            # Make analysis script executable and run for a specific code
+            chmod +x ./gp2_genotools_data/batch_files/convert_ped_to_bed.sh
+            ./gp2_genotools_data/batch_files/convert_ped_to_bed.sh {code}
+            """
+
+        # Create the job with the combined script
+        create_script_job_with_buckets(
+            project_id="gp2-release-terra",
+            region='europe-west4',
+            job_name=job_name,
+            bucket_name_input='gp2_genotools_data',
+            bucket_name_output='gp2_genotools_data',
+            script_text=script
+        )
+
+    # create file of samples to merge
+    missing_beds = []
+    df = key[key['study']==study]
+    missing_cnt = 0
+    with open(f"{raw_plink_path}/merge_bed_{study}.list", 'w') as f:
+        for filename in df.IID:
+            bed = f'{raw_plink_path}/{filename}'
+            if os.path.isfile(f'{bed}.bed'):
+                f.write(f'{bed}\n')
+            else:
+                missing_cnt += 1
+                missing_beds.append(filename)
+    f.close()
+
+    # create missing_beds file for reference
+    with open(f'{missing_idat_dir}/missing_beds_{study}.txt', 'w') as f:
+        for m_bed in missing_beds:
+            f.write(f'{m_bed}\n')
+    f.close()
+
+    # return path to merge_list
+    return f"{raw_plink_path}/merge_bed_{study}.list"
+
+
+def merge_bed_files(study, raw_plink_path, clin_key_dir):
+    """merge cohort files"""
+
+    # Create shell script to execute -- merge cohort files
+
+    # Establish paths for inputs/outputs
+    out_path = f'./gp2_genotools_data/merged_by_cohort_r10/GP2_merge_{study}'
+    out_path = f'./gp2_genotools_data/tests/GP2_merge_{study}_extra'
+
+    plink_merge_cmd = f"/home/levineks/bin/plink1.9/plink --merge-list {raw_plink_path}/merge_bed_{study}.list --update-ids {clin_key_dir}/update_ids_{study}.txt --make-bed --out {out_path}"
+
+    with open(f'./gp2_genotools_data/batch_files/merge_by_cohort.sh', 'w') as f:
+        f.write('#!/bin/bash\n\n')
+        f.write(f'{plink_merge_cmd}\n')
+    f.close()
+
+    # Loop through chromosomes and create separate jobs
+    # Generate a unique job name
+    job_name = f'mergebycohort{study.lower()}'
+
+    # Create a script for the specific chromosome
+    script = f"""
+        #!/bin/bash
+
+        # Install and activate PLINK2
+        chmod +x ./gp2_genotools_data/batch_files/plink_module.sh
+        ./gp2_genotools_data/batch_files/plink_module.sh
+
+        # Make analysis script executable and run for a specific chromosome
+        chmod +x ./gp2_genotools_data/batch_files/merge_by_cohort.sh
+        ./gp2_genotools_data/batch_files/merge_by_cohort.sh
+    """
+
+    # Create the job
+    create_script_job_with_buckets(
+        project_id="gp2-release-terra",
+        region='europe-west4',
+        job_name=job_name,
+        bucket_name_input='gp2_genotools_data',
+        bucket_name_output='gp2_genotools_data',
+        script_text=script
+    )

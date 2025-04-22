@@ -19,4 +19,5 @@ RUN chmod +x /app/exec/iaap-cli-linux-x64-1.1.0-sha.80d7e5b3d9c1fdfc2e99b472a906
 RUN apt-get update && apt-get -y install gcsfuse
 RUN gcsfuse --dir-mode 777 --file-mode 777 --implicit-dirs gp2_genotools_data ~/gp2_genotools_data
 
-CMD ["run_batch_idat.py", "key_path", "study_name"]
+ENTRYPOINT ["python", "run_batch_idat.py"]
+CMD ["--key_path", "--study_name"]

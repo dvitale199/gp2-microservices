@@ -10,7 +10,7 @@ sudo apt install -y unzip
 PLINK_URL="https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20220402.zip"
 
 # Set the VM directory where PLINK will be installed
-PLINK_INSTALL_DIR="/home/levineks/bin/plink1.9"
+PLINK_INSTALL_DIR="./plink1.9"
 
 # Create the PLINK installation directory
 mkdir -p $PLINK_INSTALL_DIR
