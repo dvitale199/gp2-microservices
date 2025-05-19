@@ -12,7 +12,8 @@ from security import get_api_key
 app = FastAPI()
 
 class BrowserRequest(BaseModel):
-    # master_key_path: str # WORK IN PROGRESS - depends on restructuring of keys
+    release_num: int # Release count
+    master_key_path: str # Path to Master Key
     gt_out_path: str  # GCS path to GT outputs
     output_path: str  # Full GCS path including desired prefix (e.g., "gs://bucket/path/prefix_name")
 
@@ -43,20 +44,24 @@ async def prep_browser(
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             # Set up directory structure
-            gt_dir = os.path.join(temp_dir, "genotools")
             output_dir = os.path.join(temp_dir, "outputs")
-            os.makedirs(gt_dir, exist_ok=True)
             os.makedirs(output_dir, exist_ok=True)
 
-            # Download SNP list and key file
+            # Download GenoTools Output file
             gt_out_local = os.path.join(temp_dir, "gt_out.json")
+            master_local = os.path.join(temp_dir, "master_key.csv")
             
-            bucket, blob_path = request.gt_out_path.replace("gs://", "").split("/", 1)
-            download_from_gcs(bucket, blob_path, gt_out_local)
+            gt_bucket, gt_path = request.gt_out_path.replace("gs://", "").split("/", 1)
+            download_from_gcs(gt_bucket, gt_path, gt_out_local)
+
+            master_bucket, master_path = request.master_key_path.replace("gs://", "").split("/", 1)
+            download_from_gcs(master_bucket, master_path, master_local)
 
             # Combine results with specified output path
             final_files = prep_browser_files(
+                rel = request.release_num,
                 gt_output = gt_out_local,
+                master_key = master_local,
                 temp_dir = output_dir
             )
 
@@ -66,7 +71,7 @@ async def prep_browser(
             output_prefix = "/".join(request.output_path.replace("gs://", "").split("/")[1:])
             
             for filename in final_files:
-                gcs_path = f"{output_prefix}/{filename}"
+                gcs_path = f"{output_prefix}/release{request.release_num}/{filename}"
                 upload_to_gcs(output_bucket, f"{output_dir}/{filename}", gcs_path)
                 final_gcs_paths.append(f"gs://{output_bucket}/{gcs_path}")
 

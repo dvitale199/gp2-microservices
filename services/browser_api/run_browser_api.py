@@ -13,12 +13,14 @@ def get_secret(project_id: str, secret_id: str, version_id: str = "latest") -> s
 # Get API key from Secret Manager
 api_key = get_secret("gp2-release-terra", "browser-api-key")
 
-# ## only use this for debugging
+### only use this for debugging
 # print("Raw API key:", api_key)
 
 payload = {
-    "gt_out_path": "gs://gp2_release9/genotools_output/GP2_r9_QCed_samples.json",
-    "output_path": "gs://gt_app_utils/qc_metrics/testing"
+    "release_num": 10,
+    "master_key_path": "gs://gp2_release10/genotools_output/master_key_release10_final_vwb.csv",
+    "gt_out_path": "gs://gp2_release10/genotools_output/GP2_r10_final_post_genotools.json",
+    "output_path": "gs://gt_app_utils/testing"
 }
 
 headers = {

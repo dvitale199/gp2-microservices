@@ -8,6 +8,35 @@ import os
 
 ### will need to have create_master_keys function when data structure is figured out for master keys
 
+def create_master(rel, master, out_path):
+    # Simplify columns
+    master.rename(columns = {'GP2ID': 'IID', 'age_at_sample_collection': 'age', 'baseline_GP2_phenotype':'pheno', 'biological_sex_for_qc': 'sex'}, inplace = True)
+    clean_key = master[['IID', 'sex', 'pheno', 'age', 'study', 'nba_prune_reason', 'nba_related', 'nba_label', 'nba', 'wgs_prune_reason', 'wgs_label', 'wgs']]
+    clean_key['release'] = rel
+
+    # Simplify pruned_reason
+    clean_key.nba_prune_reason = clean_key.nba_prune_reason.str.split('-').str[0]
+    # clean_key.wgs_prune_reason = clean_key.wgs_prune_reason.str.split('-').str[0]
+
+    # Remove trailing spaces
+    clean_key.nba_prune_reason = clean_key.nba_prune_reason.str.split(' ').str[0]
+    # clean_key.wgs_prune_reason = clean_key.wgs_prune_reason.str.split(' ').str[0]
+
+    # Split into NBA and WGS keys
+    # wgs = clean_key[(clean_key.wgs == 1)]
+
+    clean_nba = clean_key[['IID','sex','pheno','age', 'study', 'nba_prune_reason','nba_related','nba_label', 'release']]
+    # clean_wgs = wgs[['IID','sex','pheno','age', 'study', 'wgs_prune_reason','wgs_label', 'release']]
+
+    # Make consistent cols
+    clean_nba.rename(columns = {'nba_prune_reason': 'prune_reason', 'nba_related': 'related', 'nba_label': 'label'}, inplace = True)
+    # clean_wgs.rename(columns = {'wgs_prune_reason': 'prune_reason', 'wgs_label': 'label'}, inplace = True)
+
+    # Save files
+    key_path = 'nba_app_key.csv'
+    clean_nba.to_csv(f'{out_path}/{key_path}', index = False)
+    # clean_wgs.to_csv(f'{out_path}/wgs_app_key.csv', index = False)
+
 def plot_funnel(funnel_df):
     funnel_plot = go.Figure(go.Funnelarea(
         text=[f'<b>{i}</b>' for i in funnel_df['step_name']],
@@ -219,9 +248,11 @@ def ancestry_breakdown(ref_pca, proj_labels, out_path):
     pie_path = 'pie_table.csv'
     pie_table.to_csv(f'{out_path}/{pie_path}', index = False)
 
-def prep_browser_files(gt_output: str, temp_dir: str) -> list:
+def prep_browser_files(rel: int, master_key: str, gt_output: str, temp_dir: str) -> list:
     output_file = open(gt_output)
     data = json.load(output_file)
+
+    master = pd.read_csv(master_key)
 
     proj_labels = pd.DataFrame(data['ancestry_counts'])
     proj_samples = pd.DataFrame(data['ancestry_labels'])
@@ -231,6 +262,7 @@ def prep_browser_files(gt_output: str, temp_dir: str) -> list:
     ref_pca = pd.DataFrame(data['ref_pcs'])
     rel_samples = pd.DataFrame(data['related_samples'])
 
+    create_master(rel, master, temp_dir)
     prune_steps(proj_samples, df_qc, temp_dir)
     related_qc(rel_samples, temp_dir)
     variant_qc(df_qc, temp_dir)
